@@ -1,12 +1,20 @@
+import shutil
+import threading
 from datetime import datetime
 import time
 import fastapi
 import os
 import jmcomic
 import uuid
+from pathlib import Path
 
 app = fastapi.FastAPI()
 
+def delayed_delete(path: Path, delay: int):
+    time.sleep(delay)
+    if path.exists() and path.is_dir():
+        shutil.rmtree(path)
+        print(f"[AutoDelete] 已删除文件夹: {path}")
 
 @app.get("/{timestamp}")
 async def read_root(timestamp: int):
@@ -57,10 +65,11 @@ async def download_album(album_id: int):
     """
     option = jmcomic.create_option_by_str(optionStr)
     jmcomic.download_album(album_id,option)
-    file_path = f"{current_dir}/tmep/{UUID}/"
+    file_path = f"{current_dir}/tmep/{UUID}"
     file = os.listdir(file_path)[0]
     if os.path.exists(file_path):
-        return fastapi.responses.FileResponse(f"{file_path}{file}",filename=f"{file}.zip")
+        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 4*60*60), daemon=True).start()
+        return fastapi.responses.FileResponse(f"{file_path}/{file}",filename=f"{file}.zip")
     return {"status": "error"}
 
 @app.get("/search/{tag}/{num}")
