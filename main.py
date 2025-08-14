@@ -1,8 +1,11 @@
 from datetime import datetime
-import jmcomic
 import time
-from fastapi import FastAPI
-app = FastAPI()
+import fastapi
+import os
+import jmcomic
+import uuid
+
+app = fastapi.FastAPI()
 
 
 @app.get("/{timestamp}")
@@ -12,3 +15,54 @@ async def read_root(timestamp: int):
     timedelta = nowtime - datetime.fromtimestamp(timestamp)
     ms = str(int(timedelta.total_seconds() *1000 %1000))
     return {"status": "ok","app": "jmcomic_server_api","latency": ms}
+
+@app.get("/download/album/{album_id}")
+async def download_album(album_id: int):
+    UUID = uuid.uuid1()
+    current_dir = os.getcwd()
+    optionStr = f"""
+    client:
+      cache: null
+      domain: []
+      impl: api
+      postman:
+        meta_data:
+          headers: null
+          impersonate: chrome
+          proxies: {{}}
+        type: curl_cffi
+      retry_times: 5
+    dir_rule:
+      base_dir: {current_dir}
+      rule: Bd_Pname
+    download:
+      cache: true
+      image:
+        decode: true
+        suffix: null
+      threading:
+        image: 30
+        photo: 8
+    log: true
+    plugins:
+      valid: log
+      after_album:
+        - plugin: zip # 压缩文件插件
+          kwargs:
+            level: photo 
+            filename_rule: Ptitle 
+            zip_dir: {current_dir}/{UUID}
+            delete_original_file: true
+    version: '2.1'
+    """
+    option = jmcomic.create_option_by_str(optionStr)
+    jmcomic.download_album(album_id,option)
+    file_path = f"{current_dir}/{UUID}/"
+    file = os.listdir(file_path)[0]
+    if os.path.exists(file_path):
+        return {"statue": "ok", "url": f"{file_path}{file}", "name": f"{file}.zip"}
+    return {"status": "error"}
+
+@app.get("/get/album/{url}/{name}")
+async def get_album(url: str, name: str):
+    return fastapi.responses.FileResponse(f"{url}", filename=f"{name}.zip")
