@@ -7,6 +7,7 @@ import os
 import jmcomic
 import uuid
 from pathlib import Path
+import uvicorn
 
 app = fastapi.FastAPI()
 
@@ -80,3 +81,6 @@ async def search_album(tag: str, num: int):
     for album_id, title in page:
         aid_list.append({'album_id': album_id, 'title': title})
     return aid_list
+
+if __name__ == '__main__':
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, log_level="info")
