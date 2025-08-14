@@ -62,3 +62,12 @@ async def download_album(album_id: int):
     if os.path.exists(file_path):
         return fastapi.responses.FileResponse(f"{file_path}{file}",filename=f"{file}.zip")
     return {"status": "error"}
+
+@app.get("/search/{tag}/{num}")
+async def search_album(tag: str, num: int):
+    client = jmcomic.JmOption.default().new_jm_client()
+    page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
+    aid_list = []
+    for album_id, title in page:
+        aid_list.append({'album_id': album_id, 'title': title})
+    return aid_list
