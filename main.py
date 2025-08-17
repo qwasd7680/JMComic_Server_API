@@ -8,7 +8,6 @@ import jmcomic
 import uuid
 from pathlib import Path
 import uvicorn
-from jmcomic import download_photo
 
 app = fastapi.FastAPI()
 
@@ -20,7 +19,7 @@ def delayed_delete(path: Path, delay: int):
 class FirstImageDownloader(jmcomic.JmDownloader):
     def do_filter(self, detail):
         if detail.is_photo():
-            photo: jmcomic.JmPhotoDetail = detail
+            photo = detail
             return photo[:1]
         return detail
 
@@ -87,9 +86,9 @@ async def search_album(tag: str, num: int):
         page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
     except jmcomic.MissingAlbumPhotoException as e:
         return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
-    except jmcomic.JsonResolveFailException as e:
+    except jmcomic.JsonResolveFailException:
         return {"status": "error", "message": "JSON解析错误"}
-    except jmcomic.RequestRetryAllFailException as e:
+    except jmcomic.RequestRetryAllFailException:
         return {"status": "error", "message": "重试次数耗尽"}
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
@@ -137,9 +136,9 @@ async def info(aid: str):
         page = client.search_site(search_query= aid)
     except jmcomic.MissingAlbumPhotoException as e:
         return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
-    except jmcomic.JsonResolveFailException as e:
+    except jmcomic.JsonResolveFailException:
         return {"status": "error", "message": "JSON解析错误"}
-    except jmcomic.RequestRetryAllFailException as e:
+    except jmcomic.RequestRetryAllFailException:
         return {"status": "error", "message": "重试次数耗尽"}
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
