@@ -8,6 +8,7 @@ import jmcomic
 import uuid
 from pathlib import Path
 import uvicorn
+from jmcomic import download_photo
 
 app = fastapi.FastAPI()
 
@@ -15,7 +16,13 @@ def delayed_delete(path: Path, delay: int):
     time.sleep(delay)
     if path.exists() and path.is_dir():
         shutil.rmtree(path)
-        print(f"[AutoDelete] 已删除文件夹: {path}")
+
+class FirstImageDownloader(jmcomic.JmDownloader):
+    def do_filter(self, detail):
+        if detail.is_photo():
+            photo: jmcomic.JmPhotoDetail = detail
+            return photo[:1]
+        return detail
 
 @app.get("/{timestamp}")
 async def read_root(timestamp: int):
@@ -45,7 +52,7 @@ async def download_album(album_id: int):
       base_dir: {current_dir}/tmep/
       rule: Bd_Pname
     download:
-      cache: true
+      cache: false
       image:
         decode: true
         suffix: null
@@ -76,11 +83,75 @@ async def download_album(album_id: int):
 @app.get("/search/{tag}/{num}")
 async def search_album(tag: str, num: int):
     client = jmcomic.JmOption.default().new_jm_client()
-    page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
+    try:
+        page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
+    except jmcomic.MissingAlbumPhotoException as e:
+        return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
+    except jmcomic.JsonResolveFailException as e:
+        return {"status": "error", "message": "JSON解析错误"}
+    except jmcomic.RequestRetryAllFailException as e:
+        return {"status": "error", "message": "重试次数耗尽"}
+    except jmcomic.JmcomicException as e:
+        return {"status": "error", "message": f"出现其他错误:{e}"}
     aid_list = []
     for album_id, title in page:
         aid_list.append({'album_id': album_id, 'title': title})
     return aid_list
 
+@app.get("/info/{aid}")
+async def info(aid: str):
+    UUID = uuid.uuid1()
+    current_dir = os.getcwd()
+    optionStr = f"""
+        client:
+          cache: null
+          domain: []
+          impl: api
+          postman:
+            meta_data:
+              headers: null
+              impersonate: chrome
+              proxies: {{}}
+            type: curl_cffi
+          retry_times: 5
+        dir_rule:
+          base_dir: {current_dir}/tmep/{UUID}
+          rule: Bd_Pname
+        download:
+          cache: false
+          image:
+            decode: true
+            suffix: null
+          threading:
+            image: 30
+            photo: 8
+        log: true
+        plugins:
+          valid: log
+        version: '2.1'
+        """
+    option = jmcomic.create_option_by_str(optionStr)
+    client = jmcomic.JmOption.default().new_jm_client()
+    jmcomic.JmModuleConfig.CLASS_DOWNLOADER = FirstImageDownloader
+    try:
+        page = client.search_site(search_query= aid)
+    except jmcomic.MissingAlbumPhotoException as e:
+        return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
+    except jmcomic.JsonResolveFailException as e:
+        return {"status": "error", "message": "JSON解析错误"}
+    except jmcomic.RequestRetryAllFailException as e:
+        return {"status": "error", "message": "重试次数耗尽"}
+    except jmcomic.JmcomicException as e:
+        return {"status": "error", "message": f"出现其他错误:{e}"}
+    album: jmcomic.JmAlbumDetail = page.single_album
+    jmcomic.download_album(int(album.album_id),option)
+    file_path = f"{current_dir}/tmep/{UUID}/{album.title}/"
+    file = os.listdir(file_path)[0]
+    if os.path.exists(file_path):
+        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 4 * 60 * 60), daemon=True).start()
+        return fastapi.responses.FileResponse(f"{file_path}/{file}", filename=f"{file}")
+    return {"status": "error"}
+
+
 if __name__ == '__main__':
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", log_level="info")
