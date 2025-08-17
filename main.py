@@ -62,7 +62,7 @@ async def download_album(album_id: int):
     plugins:
       valid: log
       after_album:
-        - plugin: zip # 压缩文件插件
+        - plugin: zip
           kwargs:
             level: photo 
             filename_rule: Ptitle 
@@ -151,6 +151,28 @@ async def info(aid: str):
         return fastapi.responses.FileResponse(f"{file_path}/{file}", filename=f"{file}")
     return {"status": "error"}
 
+@app.get("/rank/{time}")
+async def rank(searchTime: str):
+    client = jmcomic.JmOption.default().new_jm_client()
+    pages: jmcomic.JmCategoryPage = client.categories_filter(
+        page=1,
+        time=jmcomic.JmMagicConstants.TIME_ALL,  # 时间选择全部，具体可以写什么请见JmMagicConstants
+        category=jmcomic.JmMagicConstants.CATEGORY_ALL,  # 分类选择全部，具体可以写什么请见JmMagicConstants
+        order_by=jmcomic.JmMagicConstants.ORDER_BY_LATEST,  # 按照更新时间排序，具体可以写什么请见JmMagicConstants
+    )
+    if searchTime == "month":
+        pages: jmcomic.JmCategoryPage = client.month_ranking(1)
+    elif searchTime == "week":
+        pages: jmcomic.JmCategoryPage = client.week_ranking(1)
+    elif searchTime == "day":
+        pages: jmcomic.JmCategoryPage = client.day_ranking(1)
+    ranklist = [];templist = []
+    for page in pages:
+        for i in page:
+            templist.append(i)
+        ranklist.append({"aid":templist[0], "title":templist[1]})
+        templist = []
+    return ranklist
 
 if __name__ == '__main__':
     uvicorn.run("main:app", host="0.0.0.0", log_level="info")
