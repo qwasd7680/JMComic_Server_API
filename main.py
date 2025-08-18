@@ -151,7 +151,7 @@ async def info(aid: str):
         return fastapi.responses.FileResponse(f"{file_path}/{file}", filename=f"{file}")
     return {"status": "error"}
 
-@app.get("/rank/{time}")
+@app.get("/rank/{searchTime}")
 async def rank(searchTime: str):
     client = jmcomic.JmOption.default().new_jm_client()
     pages: jmcomic.JmCategoryPage = client.categories_filter(
