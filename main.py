@@ -15,6 +15,9 @@ def delayed_delete(path: Path, delay: int):
     time.sleep(delay)
     if path.exists() and path.is_dir():
         shutil.rmtree(path)
+    elif path.is_file():
+        path.unlink()
+
 
 class FirstImageDownloader(jmcomic.JmDownloader):
     def do_filter(self, detail):
@@ -23,17 +26,18 @@ class FirstImageDownloader(jmcomic.JmDownloader):
             return photo[:1]
         return detail
 
+
 @app.get("/{timestamp}")
 async def read_root(timestamp: int):
     nowtimestamp = time.time()
     nowtime = datetime.fromtimestamp(nowtimestamp)
     timedelta = nowtime - datetime.fromtimestamp(timestamp)
-    ms = str(int(timedelta.total_seconds() *1000 %1000))
-    return {"status": "ok","app": "jmcomic_server_api","latency": ms}
+    ms = str(int(timedelta.total_seconds() * 1000 % 1000))
+    return {"status": "ok", "app": "jmcomic_server_api", "latency": ms}
+
 
 @app.get("/download/album/{album_id}")
 async def download_album(album_id: int):
-    UUID = uuid.uuid1()
     current_dir = os.getcwd()
     optionStr = f"""
     client:
@@ -51,7 +55,7 @@ async def download_album(album_id: int):
       base_dir: {current_dir}/tmep/
       rule: Bd_Pname
     download:
-      cache: false
+      cache: true
       image:
         decode: true
         suffix: null
@@ -66,18 +70,19 @@ async def download_album(album_id: int):
           kwargs:
             level: photo 
             filename_rule: Ptitle 
-            zip_dir: {current_dir}/tmep/{UUID}
+            zip_dir: {current_dir}/tmep/
             delete_original_file: true
     version: '2.1'
     """
     option = jmcomic.create_option_by_str(optionStr)
-    jmcomic.download_album(album_id,option)
-    file_path = f"{current_dir}/tmep/{UUID}"
-    file = os.listdir(file_path)[0]
+    album = jmcomic.download_album(album_id, option)
+    file_path = f"{current_dir}/tmep"
+    file = album[0].title
     if os.path.exists(file_path):
-        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 4*60*60), daemon=True).start()
-        return fastapi.responses.FileResponse(f"{file_path}/{file}",filename=f"{file}.zip")
+        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}/{file}.zip"), 0.5 * 60 * 60), daemon=True).start()
+        return fastapi.responses.FileResponse(f"{file_path}/{file}.zip", filename=f"{file}.zip")
     return {"status": "error"}
+
 
 @app.get("/search/{tag}/{num}")
 async def search_album(tag: str, num: int):
@@ -96,6 +101,7 @@ async def search_album(tag: str, num: int):
     for album_id, title in page:
         aid_list.append({'album_id': album_id, 'title': title})
     return aid_list
+
 
 @app.get("/info/{aid}")
 async def info(aid: str):
@@ -133,7 +139,7 @@ async def info(aid: str):
     client = jmcomic.JmOption.default().new_jm_client()
     jmcomic.JmModuleConfig.CLASS_DOWNLOADER = FirstImageDownloader
     try:
-        page = client.search_site(search_query= aid)
+        page = client.search_site(search_query=aid)
     except jmcomic.MissingAlbumPhotoException as e:
         return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
     except jmcomic.JsonResolveFailException:
@@ -143,13 +149,20 @@ async def info(aid: str):
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
-    jmcomic.download_album(int(album.album_id),option)
-    file_path = f"{current_dir}/tmep/{UUID}/{album.title}/"
+    jmcomic.download_album(int(album.album_id), option)
+    return {"status": "success", "tag": album.tags, "id": UUID}
+
+
+@app.get("/get/cover/{id}")
+async def getcover(id: str):
+    current_dir = os.getcwd()
+    file_path = f"{current_dir}/tmep/{id}/" + os.listdir(f"{current_dir}/tmep/{id}/")[0]
     file = os.listdir(file_path)[0]
     if os.path.exists(file_path):
-        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 4 * 60 * 60), daemon=True).start()
+        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 0.5 * 60 * 60), daemon=True).start()
         return fastapi.responses.FileResponse(f"{file_path}/{file}", filename=f"{file}")
     return {"status": "error"}
+
 
 @app.get("/rank/{searchTime}")
 async def rank(searchTime: str):
@@ -166,13 +179,15 @@ async def rank(searchTime: str):
         pages: jmcomic.JmCategoryPage = client.week_ranking(1)
     elif searchTime == "day":
         pages: jmcomic.JmCategoryPage = client.day_ranking(1)
-    ranklist = [];templist = []
+    ranklist = []
+    templist = []
     for page in pages:
         for i in page:
             templist.append(i)
-        ranklist.append({"aid":templist[0], "title":templist[1]})
+        ranklist.append({"aid": templist[0], "title": templist[1]})
         templist = []
     return ranklist
+
 
 if __name__ == '__main__':
     uvicorn.run("main:app", host="0.0.0.0", log_level="info")
