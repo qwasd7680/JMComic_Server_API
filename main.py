@@ -75,6 +75,7 @@ async def download_album(album_id: int):
     version: '2.1'
     """
     option = jmcomic.create_option_by_str(optionStr)
+    jmcomic.JmModuleConfig.CLASS_DOWNLOADER = jmcomic.JmDownloader
     album = jmcomic.download_album(album_id, option)
     file_path = f"{current_dir}/tmep"
     file = album[0].title
