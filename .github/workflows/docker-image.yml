@@ -27,5 +27,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/$jmcomic_server_api:latest
-            ghcr.io/$jmcomic_server_api:${{ github.sha }}
+            ghcr.io/jmcomic_server_api:latest
+            ghcr.io/jmcomic_server_api:${{ github.sha }}
