@@ -19,6 +19,9 @@
 - （还没想好）
 
 ## 安装教程
+
+### 方案一. 本地部署（适用于有服务器的人）
+
 * 获取本项目源代码
  ```shell
 git clone https://github.com/qwasd7680/JMComic_Server_API
@@ -31,6 +34,34 @@ pip install -r requirements.txt
 ```shell
 uvicorn main:app --port 11111 --host 0.0.0.0
 ```
+
+### 方案二. 使用HuggingFace Space
+
+* 注册一个HuggingFace账号
+* 打开Space页面，新建一个Space，选择Docker -> blank
+* 新建一个Dockerfile
+* 输入以下内容:
+```dockerfile
+FROM ghcr.io/qwasd7680/jmcomic_server_api:latest
+
+COPY . /app
+
+WORKDIR /app
+
+RUN mkdir -p /app/tmep
+
+RUN chmod 777 /app/tmep
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+EXPOSE 7860
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+```
+
+* 提交后等待build完成
+* 点击"Embed this Space"
+* 复制"Direct URL"，这个URL即为API地址
 
 ## 快速上手
 
