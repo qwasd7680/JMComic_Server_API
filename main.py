@@ -29,10 +29,9 @@ class FirstImageDownloader(jmcomic.JmDownloader):
 
 @app.get("/{timestamp}")
 async def read_root(timestamp: int):
-    nowtimestamp = time.time()
-    nowtime = datetime.fromtimestamp(nowtimestamp)
-    timedelta = nowtime - datetime.fromtimestamp(timestamp)
-    ms = str(int(timedelta.microseconds / 1000))
+    nowtimestamp = int(time.time() * 1000)
+    timedelta = nowtimestamp - timestamp
+    ms = str(int(timedelta))
     return {"status": "ok", "app": "jmcomic_server_api", "latency": ms,"version": "1.0"}
 
 
