@@ -1,6 +1,5 @@
 import shutil
 import threading
-from datetime import datetime
 import time
 import fastapi
 import os
@@ -28,12 +27,11 @@ class FirstImageDownloader(jmcomic.JmDownloader):
 
 
 @app.get("/{timestamp}")
-async def read_root(timestamp: int):
-    nowtimestamp = time.time()
-    nowtime = datetime.fromtimestamp(nowtimestamp)
-    timedelta = nowtime - datetime.fromtimestamp(timestamp)
-    ms = str(int(timedelta.total_seconds() * 1000 % 1000))
-    return {"status": "ok", "app": "jmcomic_server_api", "latency": ms}
+async def read_root(timestamp: float):
+    nowtimestamp = int(time.time() * 1000)
+    timedelta = nowtimestamp - int(timestamp)
+    ms = str(int(timedelta))
+    return {"status": "ok", "app": "jmcomic_server_api", "latency": ms,"version": "1.0"}
 
 
 @app.get("/download/album/{album_id}")
