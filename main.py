@@ -79,8 +79,16 @@ async def download_album(album_id: int):
     file = album[0].title
     if os.path.exists(file_path):
         threading.Thread(target=delayed_delete, args=(Path(f"{file_path}/{file}.zip"), 0.5 * 60 * 60), daemon=True).start()
-        return fastapi.responses.FileResponse(f"{file_path}/{file}.zip", filename=f"{file}.zip")
+        return {"status": "success","msg": "Download Complete","file_name": file}
     return {"status": "error"}
+
+@app.get("/download/{file_name}")
+async def download_file(file_name: str):
+    current_dir = os.getcwd()
+    file_path = f"{current_dir}/tmep/{file_name}.zip"
+    if os.path.exists(file_path):
+        return fastapi.responses.FileResponse(file_path, filename=f"{file_name}.zip")
+    return {"status": "error","msg": "File not found"}
 
 
 @app.get("/search/{tag}/{num}")

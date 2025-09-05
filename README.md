@@ -146,4 +146,12 @@ tag指的搜索关键词，可以是标签，作者，标题等等，num则代�
 
 /download/album/{album_id}
 
-只需要传入aid，即可将webp打包为zip返回，且自动变为"本子名.zip"
+返回示例:
+
+```json
+{"status": "success","msg": "Download Complete","file_name": "【KawaGawa】姐姐大赛（上）"}
+```
+
+然后使用/download/{file_name}
+
+只需要传入文件名称，即可将webp打包的zip返回，且自动变为"本子名.zip"
