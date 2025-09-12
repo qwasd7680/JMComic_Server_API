@@ -157,7 +157,7 @@ async def info(aid: str):
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
     jmcomic.download_album(int(album.album_id), option)
-    return {"status": "success", "tag": album.tags, "id": UUID}
+    return {"status": "success", "tag": album.tags, "id": UUID,"pages": album.page_count}
 
 
 @app.get("/get/cover/{id}")
