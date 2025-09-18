@@ -25,8 +25,11 @@ class FirstImageDownloader(jmcomic.JmDownloader):
             return photo[:1]
         return detail
 
-
-@app.get("/{timestamp}")
+"""
+    API V1.0
+    初始版本
+"""
+@app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
     nowtimestamp = int(time.time() * 1000)
     timedelta = nowtimestamp - int(timestamp)
@@ -34,7 +37,7 @@ async def read_root(timestamp: float):
     return {"status": "ok", "app": "jmcomic_server_api", "latency": ms,"version": "1.0"}
 
 
-@app.get("/download/album/{album_id}")
+@app.get("/v1/download/album/{album_id}")
 async def download_album(album_id: int):
     current_dir = os.getcwd()
     optionStr = f"""
@@ -82,7 +85,7 @@ async def download_album(album_id: int):
         return {"status": "success","msg": "Download Complete","file_name": file}
     return {"status": "error"}
 
-@app.get("/download/{file_name}")
+@app.get("/v1/download/{file_name}")
 async def download_file(file_name: str):
     current_dir = os.getcwd()
     file_path = f"{current_dir}/tmep/{file_name}.zip"
@@ -91,7 +94,7 @@ async def download_file(file_name: str):
     return {"status": "error","msg": "File not found"}
 
 
-@app.get("/search/{tag}/{num}")
+@app.get("/v1/search/{tag}/{num}")
 async def search_album(tag: str, num: int):
     client = jmcomic.JmOption.default().new_jm_client()
     try:
@@ -110,7 +113,7 @@ async def search_album(tag: str, num: int):
     return aid_list
 
 
-@app.get("/info/{aid}")
+@app.get("/v1/info/{aid}")
 async def info(aid: str):
     UUID = uuid.uuid1()
     current_dir = os.getcwd()
@@ -160,7 +163,7 @@ async def info(aid: str):
     return {"status": "success", "tag": album.tags, "id": UUID,"pages": album.page_count}
 
 
-@app.get("/get/cover/{id}")
+@app.get("/v1/get/cover/{id}")
 async def getcover(id: str):
     current_dir = os.getcwd()
     file_path = f"{current_dir}/tmep/{id}/" + os.listdir(f"{current_dir}/tmep/{id}/")[0]
@@ -171,7 +174,7 @@ async def getcover(id: str):
     return {"status": "error"}
 
 
-@app.get("/rank/{searchTime}")
+@app.get("/v1/rank/{searchTime}")
 async def rank(searchTime: str):
     client = jmcomic.JmOption.default().new_jm_client()
     pages: jmcomic.JmCategoryPage = client.categories_filter(
