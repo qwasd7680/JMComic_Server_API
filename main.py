@@ -1,6 +1,5 @@
 import shutil
 import threading
-from datetime import datetime
 import time
 import fastapi
 import os
@@ -26,17 +25,19 @@ class FirstImageDownloader(jmcomic.JmDownloader):
             return photo[:1]
         return detail
 
+"""
+    API V1.0
+    初始版本
+"""
+@app.get("/v1/{timestamp}")
+async def read_root(timestamp: float):
+    nowtimestamp = int(time.time() * 1000)
+    timedelta = nowtimestamp - int(timestamp)
+    ms = str(int(timedelta))
+    return {"status": "ok", "app": "jmcomic_server_api", "latency": ms,"version": "1.0"}
 
-@app.get("/{timestamp}")
-async def read_root(timestamp: int):
-    nowtimestamp = time.time()
-    nowtime = datetime.fromtimestamp(nowtimestamp)
-    timedelta = nowtime - datetime.fromtimestamp(timestamp)
-    ms = str(int(timedelta.total_seconds() * 1000 % 1000))
-    return {"status": "ok", "app": "jmcomic_server_api", "latency": ms}
 
-
-@app.get("/download/album/{album_id}")
+@app.get("/v1/download/album/{album_id}")
 async def download_album(album_id: int):
     current_dir = os.getcwd()
     optionStr = f"""
@@ -81,11 +82,19 @@ async def download_album(album_id: int):
     file = album[0].title
     if os.path.exists(file_path):
         threading.Thread(target=delayed_delete, args=(Path(f"{file_path}/{file}.zip"), 0.5 * 60 * 60), daemon=True).start()
-        return fastapi.responses.FileResponse(f"{file_path}/{file}.zip", filename=f"{file}.zip")
+        return {"status": "success","msg": "Download Complete","file_name": file}
     return {"status": "error"}
 
+@app.get("/v1/download/{file_name}")
+async def download_file(file_name: str):
+    current_dir = os.getcwd()
+    file_path = f"{current_dir}/tmep/{file_name}.zip"
+    if os.path.exists(file_path):
+        return fastapi.responses.FileResponse(file_path, filename=f"{file_name}.zip")
+    return {"status": "error","msg": "File not found"}
 
-@app.get("/search/{tag}/{num}")
+
+@app.get("/v1/search/{tag}/{num}")
 async def search_album(tag: str, num: int):
     client = jmcomic.JmOption.default().new_jm_client()
     try:
@@ -104,7 +113,7 @@ async def search_album(tag: str, num: int):
     return aid_list
 
 
-@app.get("/info/{aid}")
+@app.get("/v1/info/{aid}")
 async def info(aid: str):
     UUID = uuid.uuid1()
     current_dir = os.getcwd()
@@ -137,7 +146,7 @@ async def info(aid: str):
         version: '2.1'
         """
     option = jmcomic.create_option_by_str(optionStr)
-    client = jmcomic.JmOption.default().new_jm_client()
+    client = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(),domain_list=['18comic.vip'],retry_times=1)
     jmcomic.JmModuleConfig.CLASS_DOWNLOADER = FirstImageDownloader
     try:
         page = client.search_site(search_query=aid)
@@ -151,10 +160,10 @@ async def info(aid: str):
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
     jmcomic.download_album(int(album.album_id), option)
-    return {"status": "success", "tag": album.tags, "id": UUID}
+    return {"status": "success", "tag": album.tags, "id": UUID,"view_count": album.views,"like_count":album.likes,"page_count":album.page_count}
 
 
-@app.get("/get/cover/{id}")
+@app.get("/v1/get/cover/{id}")
 async def getcover(id: str):
     current_dir = os.getcwd()
     file_path = f"{current_dir}/tmep/{id}/" + os.listdir(f"{current_dir}/tmep/{id}/")[0]
@@ -165,7 +174,7 @@ async def getcover(id: str):
     return {"status": "error"}
 
 
-@app.get("/rank/{searchTime}")
+@app.get("/v1/rank/{searchTime}")
 async def rank(searchTime: str):
     client = jmcomic.JmOption.default().new_jm_client()
     pages: jmcomic.JmCategoryPage = client.categories_filter(
