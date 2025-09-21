@@ -10,6 +10,16 @@ import uvicorn
 
 app = fastapi.FastAPI()
 
+os.environ['impl'] = 'html'
+testClient = client = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(),domain_list=['18comic.vip'],retry_times=1)
+try:
+    page = testClient.search_site(search_query="胡桃")
+except jmcomic.JmcomicException as e:
+    if str(e)[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
+        os.environ['impl'] = 'api'
+        print(e)
+        print("已为您更换到api方式，页码数可能会不可用")
+
 def delayed_delete(path: Path, delay: int):
     time.sleep(delay)
     if path.exists() and path.is_dir():
@@ -146,7 +156,10 @@ async def info(aid: str):
         version: '2.1'
         """
     option = jmcomic.create_option_by_str(optionStr)
-    client = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(),domain_list=['18comic.vip'],retry_times=1)
+    if os.environ.get("impl") == "html":
+        client = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(),domain_list=['18comic.vip'],retry_times=1)
+    else:
+        client = jmcomic.JmOption.default().new_jm_client()
     jmcomic.JmModuleConfig.CLASS_DOWNLOADER = FirstImageDownloader
     try:
         page = client.search_site(search_query=aid)
@@ -160,7 +173,7 @@ async def info(aid: str):
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
     jmcomic.download_album(int(album.album_id), option)
-    return {"status": "success", "tag": album.tags, "id": UUID,"view_count": album.views,"like_count":album.likes,"page_count":album.page_count}
+    return {"status": "success", "tag": album.tags, "id": UUID,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
 
 
 @app.get("/v1/get/cover/{id}")
