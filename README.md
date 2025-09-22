@@ -134,7 +134,7 @@ tag指的搜索关键词，可以是标签，作者，标题等等，num则代�
 
 /v1/get/cover/{id}
 
-传入id，可以直接返回该album的00001.webp，适合直接放入如SwiftUI的AsyncImage组件中使用
+传入id，可以直接返回该album的cover.jpg，适合直接放入如SwiftUI的AsyncImage组件中使用
 
 示例:http://192.168.31.42:11111/v1/get/cover/923ea582-80d5-11f0-8000-dca6325c753b
 

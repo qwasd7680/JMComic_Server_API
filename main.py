@@ -27,14 +27,6 @@ def delayed_delete(path: Path, delay: int):
     elif path.is_file():
         path.unlink()
 
-
-class FirstImageDownloader(jmcomic.JmDownloader):
-    def do_filter(self, detail):
-        if detail.is_photo():
-            photo = detail
-            return photo[:1]
-        return detail
-
 """
     API V1.0
     初始版本
@@ -63,7 +55,7 @@ async def download_album(album_id: int):
         type: curl_cffi
       retry_times: 5
     dir_rule:
-      base_dir: {current_dir}/tmep/
+      base_dir: {current_dir}/temp/
       rule: Bd_Pname
     download:
       cache: true
@@ -81,14 +73,14 @@ async def download_album(album_id: int):
           kwargs:
             level: photo 
             filename_rule: Ptitle 
-            zip_dir: {current_dir}/tmep/
+            zip_dir: {current_dir}/temp/
             delete_original_file: true
     version: '2.1'
     """
     option = jmcomic.create_option_by_str(optionStr)
     jmcomic.JmModuleConfig.CLASS_DOWNLOADER = jmcomic.JmDownloader
     album = jmcomic.download_album(album_id, option)
-    file_path = f"{current_dir}/tmep"
+    file_path = f"{current_dir}/temp"
     file = album[0].title
     if os.path.exists(file_path):
         threading.Thread(target=delayed_delete, args=(Path(f"{file_path}/{file}.zip"), 0.5 * 60 * 60), daemon=True).start()
@@ -140,7 +132,7 @@ async def info(aid: str):
             type: curl_cffi
           retry_times: 5
         dir_rule:
-          base_dir: {current_dir}/tmep/{UUID}
+          base_dir: {current_dir}/temp/{UUID}
           rule: Bd_Pname
         download:
           cache: false
@@ -160,7 +152,6 @@ async def info(aid: str):
         client = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(),domain_list=['18comic.vip'],retry_times=1)
     else:
         client = jmcomic.JmOption.default().new_jm_client()
-    jmcomic.JmModuleConfig.CLASS_DOWNLOADER = FirstImageDownloader
     try:
         page = client.search_site(search_query=aid)
     except jmcomic.MissingAlbumPhotoException as e:
@@ -172,14 +163,14 @@ async def info(aid: str):
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
-    jmcomic.download_album(int(album.album_id), option)
+    client.download_album_cover(album.album_id, f'./temp/{UUID}/cover.jpg')
     return {"status": "success", "tag": album.tags, "id": UUID,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
 
 
 @app.get("/v1/get/cover/{id}")
 async def getcover(id: str):
     current_dir = os.getcwd()
-    file_path = f"{current_dir}/tmep/{id}/" + os.listdir(f"{current_dir}/tmep/{id}/")[0]
+    file_path = f"{current_dir}/temp/{id}/"
     file = os.listdir(file_path)[0]
     if os.path.exists(file_path):
         threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 0.5 * 60 * 60), daemon=True).start()
