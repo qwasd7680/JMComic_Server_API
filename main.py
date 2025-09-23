@@ -4,7 +4,6 @@ import time
 import fastapi
 import os
 import jmcomic
-import uuid
 from pathlib import Path
 import uvicorn
 
@@ -131,7 +130,6 @@ async def search_album(tag: str, num: int):
 
 @app.get("/v1/info/{aid}")
 async def info(aid: str):
-    UUID = uuid.uuid1()
     current_dir = os.getcwd()
     impl = os.environ.get("impl")
     optionStr = f"""
@@ -147,7 +145,7 @@ async def info(aid: str):
             type: curl_cffi
           retry_times: 5
         dir_rule:
-          base_dir: {current_dir}/temp/{UUID}
+          base_dir: {current_dir}/temp
           rule: Bd_Pname
         download:
           cache: false
@@ -175,18 +173,17 @@ async def info(aid: str):
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
-    client.download_album_cover(album.album_id, f'./temp/{UUID}/cover.jpg')
-    return {"status": "success", "tag": album.tags, "id": UUID,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
+    client.download_album_cover(album.album_id, f'./temp/cover-{album.album_id}.jpg')
+    return {"status": "success", "tag": album.tags,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
 
 
-@app.get("/v1/get/cover/{id}")
-async def getcover(id: str):
+@app.get("/v1/get/cover/{aid}")
+async def getcover(aid: str):
     current_dir = os.getcwd()
-    file_path = f"{current_dir}/temp/{id}/"
-    file = os.listdir(file_path)[0]
+    file_path = f"{current_dir}/temp/cover-{aid}.jpg"
     if os.path.exists(file_path):
         threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 0.5 * 60 * 60), daemon=True).start()
-        return fastapi.responses.FileResponse(f"{file_path}/{file}", filename=f"{file}")
+        return fastapi.responses.FileResponse(f"{file_path}", filename=f"cover.jpg")
     return {"status": "error"}
 
 
