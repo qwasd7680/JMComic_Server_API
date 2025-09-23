@@ -4,7 +4,6 @@ import time
 import fastapi
 import os
 import jmcomic
-import uuid
 from pathlib import Path
 import uvicorn
 
@@ -21,6 +20,11 @@ except jmcomic.JmcomicException as e:
         print("已为您更换到api方式，页码数可能会不可用")
 
 def delayed_delete(path: Path, delay: int):
+    """
+    延迟删除，传入路径（可以是文件或者文件夹）以及延迟时间（单位：秒）
+    示例用法：
+        threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 0.5 * 60 * 60), daemon=True).start()
+    """
     time.sleep(delay)
     if path.exists() and path.is_dir():
         shutil.rmtree(path)
@@ -33,6 +37,11 @@ def delayed_delete(path: Path, delay: int):
 """
 @app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
+    """
+    用于检查服务是否可用
+    :param timestamp: 毫秒级时间戳（可以包含小数）
+    :return:延迟
+    """
     nowtimestamp = int(time.time() * 1000)
     timedelta = nowtimestamp - int(timestamp)
     ms = str(int(timedelta))
@@ -41,6 +50,10 @@ async def read_root(timestamp: float):
 
 @app.get("/v1/download/album/{album_id}")
 async def download_album(album_id: int):
+    """
+    :param album_id: 本子号
+    :return: 文件名，用于下载
+    """
     current_dir = os.getcwd()
     optionStr = f"""
     client:
@@ -117,13 +130,13 @@ async def search_album(tag: str, num: int):
 
 @app.get("/v1/info/{aid}")
 async def info(aid: str):
-    UUID = uuid.uuid1()
     current_dir = os.getcwd()
+    impl = os.environ.get("impl")
     optionStr = f"""
         client:
           cache: null
           domain: []
-          impl: api
+          impl: {impl}
           postman:
             meta_data:
               headers: null
@@ -132,13 +145,13 @@ async def info(aid: str):
             type: curl_cffi
           retry_times: 5
         dir_rule:
-          base_dir: {current_dir}/temp/{UUID}
+          base_dir: {current_dir}/temp
           rule: Bd_Pname
         download:
           cache: false
           image:
             decode: true
-            suffix: null
+            suffix: webp
           threading:
             image: 30
             photo: 8
@@ -148,10 +161,7 @@ async def info(aid: str):
         version: '2.1'
         """
     option = jmcomic.create_option_by_str(optionStr)
-    if os.environ.get("impl") == "html":
-        client = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(),domain_list=['18comic.vip'],retry_times=1)
-    else:
-        client = jmcomic.JmOption.default().new_jm_client()
+    client = option.new_jm_client()
     try:
         page = client.search_site(search_query=aid)
     except jmcomic.MissingAlbumPhotoException as e:
@@ -163,18 +173,17 @@ async def info(aid: str):
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
-    client.download_album_cover(album.album_id, f'./temp/{UUID}/cover.jpg')
-    return {"status": "success", "tag": album.tags, "id": UUID,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
+    client.download_album_cover(album.album_id, f'./temp/cover-{album.album_id}.jpg')
+    return {"status": "success", "tag": album.tags,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
 
 
-@app.get("/v1/get/cover/{id}")
-async def getcover(id: str):
+@app.get("/v1/get/cover/{aid}")
+async def getcover(aid: str):
     current_dir = os.getcwd()
-    file_path = f"{current_dir}/temp/{id}/"
-    file = os.listdir(file_path)[0]
+    file_path = f"{current_dir}/temp/cover-{aid}.jpg"
     if os.path.exists(file_path):
         threading.Thread(target=delayed_delete, args=(Path(f"{file_path}"), 0.5 * 60 * 60), daemon=True).start()
-        return fastapi.responses.FileResponse(f"{file_path}/{file}", filename=f"{file}")
+        return fastapi.responses.FileResponse(f"{file_path}", filename=f"cover.jpg")
     return {"status": "error"}
 
 
