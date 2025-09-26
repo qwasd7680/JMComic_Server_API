@@ -173,7 +173,9 @@ async def info(aid: str):
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
     album: jmcomic.JmAlbumDetail = page.single_album
-    client.download_album_cover(album.album_id, f'./temp/cover-{album.album_id}.jpg')
+    file_path = f"{current_dir}/temp/cover-{album.album_id}.jpg"
+    if not os.path.exists(file_path):
+        client.download_album_cover(album.album_id, f'./temp/cover-{album.album_id}.jpg')
     return {"status": "success", "tag": album.tags,"view_count": album.views,"like_count":album.likes,"page_count":str(album.page_count),"method":os.environ.get("impl")}
 
 
