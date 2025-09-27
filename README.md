@@ -48,15 +48,15 @@ COPY . /app
 
 WORKDIR /app
 
-RUN mkdir -p /app/tmep
+RUN mkdir -p /app/temp
 
-RUN chmod 777 /app/tmep
+RUN chmod 777 /app/temp
 
 RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 7860
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorke", "main:app", "--workers", "4", "--bind", "0.0.0.0:7860"]
 ```
 
 * 提交后等待build完成
