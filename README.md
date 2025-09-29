@@ -4,17 +4,21 @@
 
 ## 项目介绍
 
-本项目使用Python FastAPI软件包开发，将JMComic-Crawler-Python
+本项目使用**Python FastAPI**软件包开发，将`JMComic-Crawler-Python`
 项目提供的接口封装，便于其他开发者开发C/S的应用程序
 
-目前已经实现的功能：
+本项目已采用**非阻塞式异步架构**，将耗时的下载任务转移到后台线程执行，并通过 WebSocket 实时向客户端推送进度通知。
+
+### 目前已经实现的功能：
 - 排行榜（每日，每周，每月，总榜）的查看
 - 本子的查询（通过tag或者aid）
 - 本子的标签获取
-- 下载第一页作为封面返回
+- 下载封面返回
 - 下载后30分钟自动删除，节省服务器空间
+- 非阻塞式下载任务启动：通过 POST 请求启动，服务器立即返回 202 Accepted。
+- 通过 WebSocket 实时通知：下载和压缩状态将通过 WebSocket 连接推送给特定客户端。
 
-未来打算实现的功能：
+### 未来打算实现的功能：
 - 登陆查看收藏
 - （还没想好）
 
@@ -32,7 +36,7 @@ pip install -r requirements.txt
 ```
 * 启动项目（这里的11111仅做示范，请根据实际情况调整）
 ```shell
-uvicorn main:app --port 11111 --host 0.0.0.0
+gunicorn -k uvicorn.workers.UvicornWorke main:app --workers 4 --bind 0.0.0.0:11111
 ```
 
 ### 方案二. 使用HuggingFace Space
@@ -69,7 +73,7 @@ CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorke", "main:app", "--workers", 
 
 /v1/后面直接跟时间戳即可
 
-示例:http://192.168.31.42:11111/v1/114514
+示例:`http://192.168.31.42:11111/v1/114514`
 
 返回结果:
 ```json
@@ -105,7 +109,7 @@ time有以下几种选择：
 
 tag指的搜索关键词，可以是标签，作者，标题等等，num则代表页数
 
-示例:http://192.168.31.42:11111/v1/search/原神/1
+示例:`http://192.168.31.42:11111/v1/search/原神/1`
 
 返回结果:
 ```json
@@ -133,24 +137,63 @@ tag指的搜索关键词，可以是标签，作者，标题等等，num则代�
 
 传入aid，可以直接返回该album的cover.jpg，适合直接放入如SwiftUI的AsyncImage组件中使用
 
-示例:http://192.168.31.42:11111/v1/get/cover/42256
+示例:`http://192.168.31.42:11111/v1/get/cover/42256`
 
 返回示例:![00001.webp](./0001.png)
 
 手动打码（陵长镜：~~没有我十分之一可爱~~）
 
-### 6. 下载本子
+### 6. 下载本子(异步任务 + WebSocket 实时通知)
 
-最为重要的环节，但其实也非常简单
+**此环节已升级为异步任务和 WebSocket 实时通知机制，以避免阻塞服务器。 客户端需要两个步骤来完成下载：**
 
-/v1/download/album/{album_id}
+#### 6.1 建立 WebSocket 连接 (监听通知)
 
-返回示例:
+首先，客户端需要建立一个持久的 WebSocket 连接来接收下载状态通知。
 
-```json
-{"status": "success","msg": "Download Complete","file_name": "【KawaGawa】姐姐大赛（上）"}
+**Endpoint: `/ws/notifications/{client_id}`**
+**Method: `WS` (WebSocket)**
+参数:
+
+- client_id: 客户端的唯一标识符（例如 UUID），用于服务器精准推送通知。
+
+示例: `ws://192.168.31.42:11111/ws/notifications/unique-client-uuid`
+
+#### 6.2 启动下载任务 (非阻塞式 POST)
+
+客户端发起下载任务请求。服务器会立即将任务放入后台线程池并返回 202 Accepted，不会阻塞。
+
+**Endpoint: `/v1/download/album/{album_id}`**
+**Method: `POST`**
+参数:
+
+- album_id: 本子号。
+
+**请求体 (Body - JSON):** 必须包含步骤 6.1 中使用的 `client_id`。
 ```
+{
+    "client_id": "unique-client-uuid"
+}
+```
+**成功启动返回示例 (HTTP 202):**
 
-然后使用/download/{file_name}
+`{"status": "processing", "message": "下载任务已在后台启动，请通过 WebSocket 监听 'download_ready' 通知。"}`
 
-只需要传入文件名称，即可将webp打包的zip返回，且自动变为"本子名.zip"
+#### 6.3 接收通知并下载文件
+
+**当后台任务完成下载和压缩后，服务器将通过 WebSocket 向对应的 `client_id` 推送通知：**
+
+**WebSocket 通知示例:**
+```
+{
+    "status": "download_ready",
+    "file_name": "【KawaGawa】姐姐大赛（上）",
+    "message": "文件 '【KawaGawa】姐姐大赛（上）' 已完成处理，可以下载。"
+}
+```
+客户端收到此通知后，即可使用 `/v1/download/{file_name}` 接口下载文件：
+
+**下载 Endpoint: `/v1/download/{file_name}`**
+**Method: `GET`**
+
+只需要传入通知中返回的 `file_name`，即可将打包的 zip 文件返回，文件名格式为 `"{file_name}.zip"`。

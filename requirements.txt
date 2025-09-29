@@ -1,3 +1,4 @@
+starlette
 fastapi~=0.116.1
 jmcomic~=2.6.9
 uvicorn[standard]~=0.35.0
