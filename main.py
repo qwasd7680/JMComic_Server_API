@@ -229,7 +229,7 @@ async def start_album_download(album_id: int, request: Request):
     )
 
 
-# --- HTTP 文件下载路由 (修正了路径错误) ---
+# --- HTTP 文件下载路由  ---
 
 @app.get("/v1/download/{file_name}")
 async def download_file(file_name: str):
