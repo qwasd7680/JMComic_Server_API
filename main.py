@@ -329,7 +329,7 @@ async def info(aid: str):
     album: jmcomic.JmAlbumDetail = page.single_album
     file_path = FILE_PATH / f"cover-{album.album_id}.jpg"
     if not file_path.exists():
-        client.download_album_cover(album.album_id, file_path)
+        client.download_album_cover(album.album_id, str(file_path))
     return {"status": "success", "tag": album.tags, "view_count": album.views, "like_count": album.likes,
             "page_count": str(album.page_count), "method": os.environ.get("impl")}
 
