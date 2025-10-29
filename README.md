@@ -1,6 +1,7 @@
 # RESTful API For JMComic-Crawler-Python
 
 [![Docker Image CI](https://github.com/qwasd7680/JMComic_Server_API/actions/workflows/docker-image.yml/badge.svg)](https://github.com/qwasd7680/JMComic_Server_API/actions/workflows/docker-image.yml)
+[![Pytest](https://github.com/qwasd7680/JMComic_Server_API/actions/workflows/python-app.yml/badge.svg)](https://github.com/qwasd7680/JMComic_Server_API/actions/workflows/python-app.yml)
 
 ## 项目介绍
 
