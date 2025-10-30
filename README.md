@@ -57,7 +57,7 @@ RUN mkdir -p /app/temp
 
 RUN chmod 777 /app/temp
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
 EXPOSE 7860
 

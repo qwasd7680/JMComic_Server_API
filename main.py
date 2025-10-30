@@ -4,12 +4,13 @@ import threading
 import shutil
 import asyncio
 from http.client import responses
-from typing import Dict
+from typing import Dict, Optional
 from fastapi import *
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 import jmcomic
 from pathlib import Path
+from fastapi.responses import JSONResponse
 
 # --- 全局配置和初始化 ---
 app = FastAPI()
@@ -35,37 +36,32 @@ except jmcomic.JmcomicException as e:
 # --- WebSocket 连接管理器 ---
 
 class ConnectionManager:
-    """管理活跃的 WebSocket 连接，使用 client_id 作为 key"""
-
+    """
+    管理 WebSocket 连接，记录主事件循环并提供线程安全的发送接口。
+    """
     def __init__(self):
-        # 存储 client_id 到 WebSocket 对象的映射
         self.active_connections: Dict[str, WebSocket] = {}
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def connect(self, client_id: str, websocket: WebSocket):
-        """接受新连接，并将其关联到唯一的 client_id"""
         await websocket.accept()
         self.active_connections[client_id] = websocket
-        print(f"[WebSocket] 新客户端连接 ID: {client_id}")
+        if self.loop is None:
+            self.loop = asyncio.get_event_loop()
+        print(f"[WebSocket] 客户端 {client_id} 已连接。")
 
-    def disconnect(self, client_id: str):
-        """移除断开的连接"""
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-            print(f"[WebSocket] 客户端断开连接 ID: {client_id}")
-
-    async def send_personal_message(self, client_id: str, message: dict):
-        """向特定客户端发送 JSON 消息"""
-        if client_id in self.active_connections:
-            websocket = self.active_connections[client_id]
+    async def _send_and_close(self, client_id: str, message: dict):
+        websocket = self.active_connections.get(client_id)
+        if websocket:
+            await websocket.send_json(message)
+            print(f"[WebSocket] 发送消息给客户端 {client_id}: {message}")
             try:
-                await websocket.send_json(message)
-                print(f"[WebSocket] 成功向客户端 {client_id} 发送通知。")
-            except Exception as e:
-                print(f"[WebSocket Error] 向客户端 {client_id} 发送消息失败: {e}")
-                self.disconnect(client_id)
+                await websocket.close()
+            except Exception:
+                pass
+            self.active_connections.pop(client_id, None)
         else:
-            print(f"[WebSocket Error] 客户端 {client_id} 的连接不存在。")
-
+            print(f"[WebSocket] 未找到客户端 {client_id} 的连接，无法发送消息。")
 
 manager = ConnectionManager()
 
@@ -98,15 +94,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     客户端连接时必须提供唯一的 client_id。
     """
     await manager.connect(client_id, websocket)
-    try:
-        # 保持连接活跃，等待断开
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(client_id)
-    except Exception as e:
-        print(f"[WebSocket Error] 接收循环出错: {e}")
-        manager.disconnect(client_id)
 
 
 # --- 阻塞任务处理函数 (在新线程中运行) ---
@@ -119,7 +106,6 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
     print(f"[Task] 开始执行相册 {album_id} 的阻塞下载任务...")
 
     try:
-        # 配置 Jmcomic 选项 (使用 Path 对象来构建 base_dir)
         optionStr = f"""
         client:
           cache: null
@@ -157,8 +143,6 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
         """
         option = jmcomic.create_option_by_str(optionStr)
         jmcomic.JmModuleConfig.CLASS_DOWNLOADER = jmcomic.JmDownloader
-
-        # 阻塞调用
         album_list = jmcomic.download_album(album_id, option)
 
         if not album_list:
@@ -169,64 +153,55 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
         zip_file_path = FILE_PATH / zip_file_name
 
         if zip_file_path.exists():
-            # 启动延迟删除线程 (0.5 * 60 * 60 秒 = 30 分钟)
-            threading.Thread(target=delayed_delete,
-                             args=(zip_file_path, int(0.5 * 60 * 60)),
-                             daemon=True).start()
-
-            # 任务成功，使用 asyncio.run() 在当前线程中运行异步通知任务
-            asyncio.run(manager.send_personal_message(client_id, {
+            message = {
                 "status": "download_ready",
                 "file_name": file_title,
                 "message": f"文件 '{file_title}' 已完成处理，可以下载。"
-            }))
-
+            }
         else:
-            # 任务失败，发送 WebSocket 错误通知
-            asyncio.run(manager.send_personal_message(client_id, {
+            message = {
                 "status": "error",
                 "file_name": file_title,
                 "message": f"文件 '{file_title}' 未找到或处理失败。"
-            }))
-
+            }
+        if manager.loop:
+            future = asyncio.run_coroutine_threadsafe(manager._send_and_close(client_id, message), manager.loop)
+            try:
+                future.result(timeout=10)
+            except Exception as e:
+                print(f"[Task] 通过主循环发送消息失败: {e}")
+        else:
+            print("[Task] 未记录到主事件循环，无法发送 WebSocket 通知。")
     except Exception as e:
-        print(f"[Task Error] 下载任务发生异常: {e}")
-        # 任务异常，发送 WebSocket 错误通知
-        asyncio.run(manager.send_personal_message(client_id, {
-            "status": "error",
-            "file_name": "",
-            "message": f"下载任务失败: {str(e)}"
-        }))
+        if manager.loop:
+            fut = asyncio.run_coroutine_threadsafe(
+                manager._send_and_close(client_id,
+                                        {"status": "error", "file_name": "", "message": f"下载任务失败: {str(e)}"}),
+                manager.loop
+            )
+            try:
+                fut.result(timeout=10)
+            except Exception as ee:
+                print(f"[Task] 发送异常通知失败: {ee}")
 
 
 # --- HTTP 任务启动路由 (替换原 download_album) ---
 
 @app.post("/v1/download/album/{album_id}")
 async def start_album_download(album_id: int, request: Request):
-    """
-    接收下载请求，立即返回 202，并在后台线程中启动耗时的下载任务。
-    客户端必须在 POST body 中提供唯一的 client_id 来接收通知。
-    """
     try:
         data = await request.json()
         client_id = data.get("client_id")
     except Exception:
         raise HTTPException(status_code=400, detail="Request body must be valid JSON containing 'client_id'.")
 
-    if not client_id or client_id not in manager.active_connections:
-        raise HTTPException(status_code=400, detail="WebSocket connection not established or client_id invalid.")
-
-    # 立即在线程池中启动同步阻塞任务
     print(f"[Server] 接收下载请求，相册 ID: {album_id}，客户端 ID: {client_id}。任务将在后台启动...")
 
-    # 使用 asyncio.create_task 包裹 run_in_threadpool，使其完全在后台异步运行
     asyncio.create_task(run_in_threadpool(sync_download_and_zip_task, album_id, client_id))
 
     # 返回 HTTP 202 Accepted 响应，告知客户端任务已接收
-    return Response(
-        status_code=202,
-        content={"status": "processing", "message": "下载任务已在后台启动，请通过 WebSocket 监听 'download_ready' 通知。"}
-    )
+    return JSONResponse(status_code=202, content={"status": "processing",
+                                                  "message": "下载任务已在后台启动，请通过 WebSocket 监听 'download_ready' 通知。"})
 
 
 # --- HTTP 文件下载路由  ---
@@ -240,7 +215,6 @@ async def download_file(file_name: str):
     file_path = FILE_PATH / zip_file_name  # 使用统一的 Path 对象和变量
 
     if file_path.exists():
-        # 使用 FastAPI.responses.FileResponse
         return responses.FileResponse(file_path, filename=zip_file_name, media_type="application/zip")
 
     return Response(
