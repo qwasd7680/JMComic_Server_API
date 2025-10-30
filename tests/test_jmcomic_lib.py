@@ -6,14 +6,16 @@ current_dir = os.getcwd()
 FILE_PATH = Path(f"{current_dir}/temp")
 os.makedirs(FILE_PATH, exist_ok=True)
 
+
 def test_get_comic_info():
     testClient = jmcomic.JmOption.default().new_jm_client()
     page = testClient.search_site(search_query="1225432")
     album: jmcomic.JmAlbumDetail = page.single_album
     assert album.title == "［酸菜鱼ゅ°］ヒルチャールに败北した胡桃 表情、台词差分"
-    assert album.tags == ["全彩","贫乳","调教","中文"]
+    assert album.tags == ["全彩", "贫乳", "调教", "中文"]
     assert album.views is not None
     assert album.likes is not None
+
 
 def test_rank_comic():
     client = jmcomic.JmOption.default().new_jm_client()
@@ -23,6 +25,7 @@ def test_rank_comic():
     assert page1.page_size > 0
     assert page2.page_size > 0
     assert page3.page_size > 0
+
 
 def test_comic_download():
     optionStr = f"""
