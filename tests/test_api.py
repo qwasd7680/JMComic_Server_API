@@ -1,3 +1,4 @@
+import shutil
 from fastapi.testclient import TestClient
 import time
 import os
@@ -78,3 +79,5 @@ def test_download_album():
     assert zip_file_path.exists() == True
     zip_file_path.unlink()
     assert zip_file_path.exists() == False
+
+shutil.rmtree(FILE_PATH)
