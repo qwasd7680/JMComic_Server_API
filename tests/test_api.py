@@ -1,4 +1,3 @@
-import shutil
 from fastapi.testclient import TestClient
 import time
 import os
@@ -8,6 +7,7 @@ from main import app
 current_dir = os.getcwd()
 FILE_PATH = Path(f"{current_dir}/temp")
 os.makedirs(FILE_PATH, exist_ok=True)
+
 
 def test_read_root():
     client = TestClient(app)
@@ -79,5 +79,3 @@ def test_download_album():
     assert zip_file_path.exists() == True
     zip_file_path.unlink()
     assert zip_file_path.exists() == False
-
-shutil.rmtree(FILE_PATH)
