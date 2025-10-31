@@ -3,7 +3,7 @@ import time
 import threading
 import shutil
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple, Any
 from fastapi import *
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.concurrency import run_in_threadpool
@@ -11,6 +11,7 @@ import uvicorn
 import jmcomic
 from pathlib import Path
 from functools import lru_cache
+from datetime import datetime, timedelta
 
 # --- 全局配置和初始化 ---
 app = FastAPI()
@@ -135,6 +136,47 @@ def create_info_option_string(base_dir: Path, impl: str) -> str:
           valid: log
         version: '2.1'
         """
+
+
+# --- 简单的内存缓存实现 ---
+
+class SimpleCache:
+    """简单的TTL缓存实现，用于缓存频繁访问的数据"""
+    def __init__(self, ttl_seconds: int = 300):
+        self.cache: Dict[str, Tuple[Any, datetime]] = {}
+        self.ttl = timedelta(seconds=ttl_seconds)
+        self.lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[Any]:
+        """获取缓存值，如果过期返回None"""
+        with self.lock:
+            if key in self.cache:
+                value, expiry = self.cache[key]
+                if datetime.now() < expiry:
+                    return value
+                else:
+                    # 清理过期条目
+                    del self.cache[key]
+            return None
+
+    def set(self, key: str, value: Any) -> None:
+        """设置缓存值"""
+        with self.lock:
+            self.cache[key] = (value, datetime.now() + self.ttl)
+
+    def clear(self) -> None:
+        """清空缓存"""
+        with self.lock:
+            self.cache.clear()
+
+
+# 创建缓存实例
+# 搜索结果缓存5分钟
+search_cache = SimpleCache(ttl_seconds=300)
+# 排行榜缓存10分钟（更新不频繁）
+rank_cache = SimpleCache(ttl_seconds=600)
+# 相册信息缓存10分钟
+album_info_cache = SimpleCache(ttl_seconds=600)
 
 
 # --- WebSocket 连接管理器 ---
@@ -310,6 +352,12 @@ async def read_root(timestamp: float):
 
 @app.get("/v1/search/{tag}/{num}")
 async def search_album(tag: str, num: int):
+    # 检查缓存
+    cache_key = f"search:{tag}:{num}"
+    cached_result = search_cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+    
     client = get_jm_client()
     try:
         page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
@@ -321,14 +369,24 @@ async def search_album(tag: str, num: int):
         return {"status": "error", "message": "重试次数耗尽"}
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
+    
     aid_list = []
     for album_id, title in page:
         aid_list.append({'album_id': album_id, 'title': title})
+    
+    # 缓存结果
+    search_cache.set(cache_key, aid_list)
     return aid_list
 
 
 @app.get("/v1/info/{aid}")
 async def info(aid: str):
+    # 检查缓存
+    cache_key = f"album_info:{aid}"
+    cached_result = album_info_cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+    
     impl = get_impl_mode()
     optionStr = create_info_option_string(FILE_PATH, impl)
     option = jmcomic.create_option_by_str(optionStr)
@@ -347,8 +405,13 @@ async def info(aid: str):
     file_path = FILE_PATH / f"cover-{album.album_id}.jpg"
     if not file_path.exists():
         client.download_album_cover(album.album_id, str(file_path))
-    return {"status": "success", "tag": album.tags, "view_count": album.views, "like_count": album.likes,
-            "page_count": str(album.page_count), "method": impl}
+    
+    result = {"status": "success", "tag": album.tags, "view_count": album.views, "like_count": album.likes,
+              "page_count": str(album.page_count), "method": impl}
+    
+    # 缓存结果
+    album_info_cache.set(cache_key, result)
+    return result
 
 
 @app.get("/v1/get/cover/{aid}")
@@ -363,6 +426,12 @@ async def getcover(aid: str):
 
 @app.get("/v1/rank/{searchTime}")
 async def rank(searchTime: str):
+    # 检查缓存
+    cache_key = f"rank:{searchTime}"
+    cached_result = rank_cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+    
     client = get_jm_client()
     pages: jmcomic.JmCategoryPage = client.categories_filter(
         page=1,
@@ -381,6 +450,8 @@ async def rank(searchTime: str):
     for album_id, title in pages:
         ranklist.append({"aid": album_id, "title": title})
 
+    # 缓存结果
+    rank_cache.set(cache_key, ranklist)
     return ranklist
 
 
