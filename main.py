@@ -4,7 +4,7 @@ import threading
 import shutil
 import asyncio
 from typing import Dict, Optional, Tuple, Any
-from fastapi import *
+from fastapi import FastAPI, WebSocket, Response, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.concurrency import run_in_threadpool
 import uvicorn
@@ -39,12 +39,18 @@ def get_impl_mode() -> str:
             testClient.search_site(search_query="胡桃")
             _impl_mode = 'html'
         except jmcomic.JmcomicException as e:
-            if str(e)[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
-                _impl_mode = 'api'
+            # 特定错误（403/地区限制）或任何其他JmcomicException都回退到API模式
+            _impl_mode = 'api'
+            error_msg = str(e)
+            if error_msg[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
                 print(f"Jmcomic Error: {e}")
                 print("已为您更换到api方式，页码数可能会不可用")
             else:
-                _impl_mode = 'api'
+                print(f"HTML模式初始化失败，切换到API模式: {e}")
+        except Exception as e:
+            # 对于非JmcomicException的异常，也回退到API模式但记录警告
+            _impl_mode = 'api'
+            print(f"警告: HTML模式测试时发生意外错误，使用API模式: {e}")
         os.environ['impl'] = _impl_mode
     return _impl_mode
 
@@ -151,7 +157,8 @@ class SimpleCache:
         with self.lock:
             if key in self.cache:
                 value, expiry = self.cache[key]
-                if datetime.now() < expiry:
+                now = datetime.now()
+                if now < expiry:
                     return value
                 else:
                     # 清理过期条目
@@ -160,8 +167,9 @@ class SimpleCache:
 
     def set(self, key: str, value: Any) -> None:
         """设置缓存值"""
+        now = datetime.now()
         with self.lock:
-            self.cache[key] = (value, datetime.now() + self.ttl)
+            self.cache[key] = (value, now + self.ttl)
 
     def clear(self) -> None:
         """清空缓存"""
@@ -369,9 +377,8 @@ async def search_album(tag: str, num: int):
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
     
-    aid_list = []
-    for album_id, title in page:
-        aid_list.append({'album_id': album_id, 'title': title})
+    # 使用列表推导式提高性能
+    aid_list = [{'album_id': album_id, 'title': title} for album_id, title in page]
     
     # 缓存结果
     search_cache.set(cache_key, aid_list)
@@ -451,9 +458,8 @@ async def rank(searchTime: str):
     elif searchTime == "day":
         pages: jmcomic.JmCategoryPage = client.day_ranking(1)
 
-    ranklist = []
-    for album_id, title in pages:
-        ranklist.append({"aid": album_id, "title": title})
+    # 使用列表推导式提高性能
+    ranklist = [{"aid": album_id, "title": title} for album_id, title in pages]
 
     # 缓存结果
     rank_cache.set(cache_key, ranklist)
