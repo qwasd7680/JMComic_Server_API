@@ -198,3 +198,15 @@ tag指的搜索关键词，可以是标签，作者，标题等等，num则代�
 **Method: `GET`**
 
 只需要传入通知中返回的 `file_name`，即可将打包的 zip 文件返回，文件名格式为 `"{file_name}.zip"`。
+
+## 感谢以下项目
+
+### 禁漫Python爬虫
+
+<a href="https://github.com/hect0x7/JMComic-Crawler-Python">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github-readme-stats.vercel.app/api/pin/?username=hect0x7&repo=JMComic-Crawler-Python&theme=radical" />
+    <source media="(prefers-color-scheme: light)" srcset="https://github-readme-stats.vercel.app/api/pin/?username=hect0x7&repo=JMComic-Crawler-Python" />
+    <img alt="Repo Card" src="https://github-readme-stats.vercel.app/api/pin/?username=hect0x7&repo=JMComic-Crawler-Python" />
+  </picture>
+</a>
