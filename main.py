@@ -212,7 +212,7 @@ async def download_file(file_name: str):
     客户端收到通知后，通过此路由下载文件。
     """
     zip_file_name = f"{file_name}.zip"
-    file_path = FILE_PATH / zip_file_name  # 使用统一的 Path 对象和变量
+    file_path = FILE_PATH / zip_file_name
 
     if file_path.exists():
         return responses.FileResponse(file_path, filename=zip_file_name, media_type="application/zip")
@@ -222,8 +222,6 @@ async def download_file(file_name: str):
         content={"status": "error", "msg": "File not found or has expired."}
     )
 
-
-# --- 其他原有路由 (保持不变) ---
 
 @app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
@@ -321,12 +319,6 @@ async def getcover(aid: str):
 @app.get("/v1/rank/{searchTime}")
 async def rank(searchTime: str):
     client = jmcomic.JmOption.default().new_jm_client()
-    pages: jmcomic.JmCategoryPage = client.categories_filter(
-        page=1,
-        time=jmcomic.JmMagicConstants.TIME_ALL,
-        category=jmcomic.JmMagicConstants.CATEGORY_ALL,
-        order_by=jmcomic.JmMagicConstants.ORDER_BY_LATEST,
-    )
     if searchTime == "month":
         pages: jmcomic.JmCategoryPage = client.month_ranking(1)
     elif searchTime == "week":
@@ -342,5 +334,4 @@ async def rank(searchTime: str):
 
 
 if __name__ == '__main__':
-    # 确保 uvicorn 运行时引用的是当前文件的 app 实例
     uvicorn.run("main:app", host="0.0.0.0", log_level="info")
