@@ -3,14 +3,14 @@ import time
 import threading
 import shutil
 import asyncio
-from http.client import responses
 from typing import Dict, Optional
 from fastapi import *
+from fastapi.responses import JSONResponse, FileResponse
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 import jmcomic
 from pathlib import Path
-from fastapi.responses import JSONResponse
+from functools import lru_cache
 
 # --- 全局配置和初始化 ---
 app = FastAPI()
@@ -20,17 +20,121 @@ FILE_PATH = Path(f"{current_dir}/temp")
 # 自动创建 temp 目录
 os.makedirs(FILE_PATH, exist_ok=True)
 
-# 确保 jmcomic 客户端配置正确
-os.environ['impl'] = 'html'
-testClient = jmcomic.JmHtmlClient(postman=jmcomic.JmModuleConfig.new_postman(), domain_list=['18comic.vip'],
-                                  retry_times=1)
-try:
-    testClient.search_site(search_query="胡桃")
-except jmcomic.JmcomicException as e:
-    if str(e)[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
-        os.environ['impl'] = 'api'
-        print(f"Jmcomic Error: {e}")
-        print("已为您更换到api方式，页码数可能会不可用")
+# 配置实现方式 - 延迟初始化，避免启动时网络调用
+# 使用环境变量或在首次请求时确定
+_impl_mode: Optional[str] = None
+
+
+def get_impl_mode() -> str:
+    """获取实现模式，延迟初始化避免启动阻塞"""
+    global _impl_mode
+    if _impl_mode is None:
+        os.environ['impl'] = 'html'
+        testClient = jmcomic.JmHtmlClient(
+            postman=jmcomic.JmModuleConfig.new_postman(),
+            domain_list=['18comic.vip'],
+            retry_times=1
+        )
+        try:
+            testClient.search_site(search_query="胡桃")
+            _impl_mode = 'html'
+        except jmcomic.JmcomicException as e:
+            if str(e)[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
+                _impl_mode = 'api'
+                print(f"Jmcomic Error: {e}")
+                print("已为您更换到api方式，页码数可能会不可用")
+            else:
+                _impl_mode = 'api'
+        os.environ['impl'] = _impl_mode
+    return _impl_mode
+
+
+# 客户端连接池 - 重用客户端连接而不是每次创建新的
+_client_cache: Optional[jmcomic.JmcomicClient] = None
+_client_lock = threading.Lock()
+
+
+def get_jm_client() -> jmcomic.JmcomicClient:
+    """获取共享的 JmComic 客户端实例"""
+    global _client_cache
+    if _client_cache is None:
+        with _client_lock:
+            if _client_cache is None:
+                get_impl_mode()  # 确保 impl 已设置
+                _client_cache = jmcomic.JmOption.default().new_jm_client()
+    return _client_cache
+
+
+# 配置字符串模板工厂 - 避免重复构建字符串
+def create_download_option_string(base_dir: Path) -> str:
+    """创建下载选项配置字符串"""
+    return f"""
+        client:
+          cache: null
+          domain: []
+          impl: api
+          postman:
+            meta_data:
+              headers: null
+              impersonate: chrome
+              proxies: {{}}
+            type: curl_cffi
+          retry_times: 5
+        dir_rule:
+          base_dir: {base_dir}
+          rule: Bd_Pname
+        download:
+          cache: true
+          image:
+            decode: true
+            suffix: null
+          threading:
+            image: 30
+            photo: 8
+        log: true
+        plugins:
+          valid: log
+          after_album:
+            - plugin: zip
+              kwargs:
+                level: photo 
+                filename_rule: Ptitle 
+                zip_dir: {base_dir}
+                delete_original_file: true
+        version: '2.1'
+        """
+
+
+def create_info_option_string(base_dir: Path, impl: str) -> str:
+    """创建信息获取选项配置字符串"""
+    return f"""
+        client:
+          cache: null
+          domain: []
+          impl: {impl}
+          postman:
+            meta_data:
+              headers: null
+              impersonate: chrome
+              proxies: {{}}
+            type: curl_cffi
+          retry_times: 5
+        dir_rule:
+          base_dir: {base_dir}
+          rule: Bd_Pname
+        download:
+          cache: false
+          image:
+            decode: true
+            suffix: webp
+          threading:
+            image: 30
+            photo: 8
+        log: true
+        plugins:
+          valid: log
+        version: '2.1'
+        """
 
 
 # --- WebSocket 连接管理器 ---
@@ -106,41 +210,7 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
     print(f"[Task] 开始执行相册 {album_id} 的阻塞下载任务...")
 
     try:
-        optionStr = f"""
-        client:
-          cache: null
-          domain: []
-          impl: api
-          postman:
-            meta_data:
-              headers: null
-              impersonate: chrome
-              proxies: {{}}
-            type: curl_cffi
-          retry_times: 5
-        dir_rule:
-          base_dir: {FILE_PATH}
-          rule: Bd_Pname
-        download:
-          cache: true
-          image:
-            decode: true
-            suffix: null
-          threading:
-            image: 30
-            photo: 8
-        log: true
-        plugins:
-          valid: log
-          after_album:
-            - plugin: zip
-              kwargs:
-                level: photo 
-                filename_rule: Ptitle 
-                zip_dir: {FILE_PATH}
-                delete_original_file: true
-        version: '2.1'
-        """
+        optionStr = create_download_option_string(FILE_PATH)
         option = jmcomic.create_option_by_str(optionStr)
         jmcomic.JmModuleConfig.CLASS_DOWNLOADER = jmcomic.JmDownloader
         album_list = jmcomic.download_album(album_id, option)
@@ -215,7 +285,7 @@ async def download_file(file_name: str):
     file_path = FILE_PATH / zip_file_name  # 使用统一的 Path 对象和变量
 
     if file_path.exists():
-        return responses.FileResponse(file_path, filename=zip_file_name, media_type="application/zip")
+        return FileResponse(file_path, filename=zip_file_name, media_type="application/zip")
 
     return Response(
         status_code=404,
@@ -240,7 +310,7 @@ async def read_root(timestamp: float):
 
 @app.get("/v1/search/{tag}/{num}")
 async def search_album(tag: str, num: int):
-    client = jmcomic.JmOption.default().new_jm_client()
+    client = get_jm_client()
     try:
         page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
     except jmcomic.MissingAlbumPhotoException as e:
@@ -259,35 +329,8 @@ async def search_album(tag: str, num: int):
 
 @app.get("/v1/info/{aid}")
 async def info(aid: str):
-    impl = os.environ.get("impl")
-    optionStr = f"""
-        client:
-          cache: null
-          domain: []
-          impl: {impl}
-          postman:
-            meta_data:
-              headers: null
-              impersonate: chrome
-              proxies: {{}}
-            type: curl_cffi
-          retry_times: 5
-        dir_rule:
-          base_dir: {FILE_PATH}
-          rule: Bd_Pname
-        download:
-          cache: false
-          image:
-            decode: true
-            suffix: webp
-          threading:
-            image: 30
-            photo: 8
-        log: true
-        plugins:
-          valid: log
-        version: '2.1'
-        """
+    impl = get_impl_mode()
+    optionStr = create_info_option_string(FILE_PATH, impl)
     option = jmcomic.create_option_by_str(optionStr)
     client = option.new_jm_client()
     try:
@@ -305,7 +348,7 @@ async def info(aid: str):
     if not file_path.exists():
         client.download_album_cover(album.album_id, str(file_path))
     return {"status": "success", "tag": album.tags, "view_count": album.views, "like_count": album.likes,
-            "page_count": str(album.page_count), "method": os.environ.get("impl")}
+            "page_count": str(album.page_count), "method": impl}
 
 
 @app.get("/v1/get/cover/{aid}")
@@ -314,13 +357,13 @@ async def getcover(aid: str):
     if file_path.exists():
         # 启动延迟删除线程 (0.5 * 60 * 60 秒 = 30 分钟)
         threading.Thread(target=delayed_delete, args=(file_path, int(0.5 * 60 * 60)), daemon=True).start()
-        return responses.FileResponse(file_path, filename=f"cover.jpg", media_type="image/jpeg")
+        return FileResponse(file_path, filename=f"cover.jpg", media_type="image/jpeg")
     return {"status": "error"}
 
 
 @app.get("/v1/rank/{searchTime}")
 async def rank(searchTime: str):
-    client = jmcomic.JmOption.default().new_jm_client()
+    client = get_jm_client()
     pages: jmcomic.JmCategoryPage = client.categories_filter(
         page=1,
         time=jmcomic.JmMagicConstants.TIME_ALL,
