@@ -10,7 +10,6 @@ from starlette.concurrency import run_in_threadpool
 import uvicorn
 import jmcomic
 from pathlib import Path
-from functools import lru_cache
 from datetime import datetime, timedelta
 
 # --- 全局配置和初始化 ---
@@ -387,10 +386,10 @@ async def info(aid: str):
     if cached_result is not None:
         return cached_result
     
+    # 使用共享客户端获取相册信息
+    client = get_jm_client()
     impl = get_impl_mode()
-    optionStr = create_info_option_string(FILE_PATH, impl)
-    option = jmcomic.create_option_by_str(optionStr)
-    client = option.new_jm_client()
+    
     try:
         page = client.search_site(search_query=aid)
     except jmcomic.MissingAlbumPhotoException as e:
@@ -401,10 +400,16 @@ async def info(aid: str):
         return {"status": "error", "message": "重试次数耗尽"}
     except jmcomic.JmcomicException as e:
         return {"status": "error", "message": f"出现其他错误:{e}"}
+    
     album: jmcomic.JmAlbumDetail = page.single_album
     file_path = FILE_PATH / f"cover-{album.album_id}.jpg"
+    
+    # 只有在需要下载封面时才创建自定义客户端
     if not file_path.exists():
-        client.download_album_cover(album.album_id, str(file_path))
+        optionStr = create_info_option_string(FILE_PATH, impl)
+        option = jmcomic.create_option_by_str(optionStr)
+        download_client = option.new_jm_client()
+        download_client.download_album_cover(album.album_id, str(file_path))
     
     result = {"status": "success", "tag": album.tags, "view_count": album.views, "like_count": album.likes,
               "page_count": str(album.page_count), "method": impl}
