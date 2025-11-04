@@ -367,8 +367,6 @@ async def download_file(file_name: str):
     )
 
 
-# --- 其他原有路由 (保持不变) ---
-
 @app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
     """
@@ -493,12 +491,6 @@ async def rank(searchTime: str):
         return cached_result
     
     client = get_jm_client()
-    pages: jmcomic.JmCategoryPage = client.categories_filter(
-        page=1,
-        time=jmcomic.JmMagicConstants.TIME_ALL,
-        category=jmcomic.JmMagicConstants.CATEGORY_ALL,
-        order_by=jmcomic.JmMagicConstants.ORDER_BY_LATEST,
-    )
     if searchTime == "month":
         pages: jmcomic.JmCategoryPage = client.month_ranking(1)
     elif searchTime == "week":
@@ -515,5 +507,4 @@ async def rank(searchTime: str):
 
 
 if __name__ == '__main__':
-    # 确保 uvicorn 运行时引用的是当前文件的 app 实例
     uvicorn.run("main:app", host="0.0.0.0", log_level="info")
