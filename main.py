@@ -331,13 +331,37 @@ async def download_file(file_name: str):
     客户端收到通知后，通过此路由下载文件。
     安全性：使用路径规范化和白名单验证防止路径遍历攻击
     """
-    zip_file_name = f"{file_name}.zip"
+    # 防止路径遍历攻击：移除路径分隔符和相对路径符号
+    safe_file_name = file_name.replace('/', '').replace('\\', '').replace('..', '')
+    if not safe_file_name or safe_file_name != file_name:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "msg": "Invalid file name."}
+        )
+
+    zip_file_name = f"{safe_file_name}.zip"
     file_path = FILE_PATH / zip_file_name
 
-    if file_path.exists():
-        return responses.FileResponse(file_path, filename=zip_file_name, media_type="application/zip")
+    # 确保解析后的路径仍在 FILE_PATH 目录内（双重防护）
+    try:
+        resolved_path = file_path.resolve()
+        resolved_base = FILE_PATH.resolve()
+        # 检查规范化路径是否以基础目录开头（防止符号链接攻击）
+        if not str(resolved_path).startswith(str(resolved_base) + os.sep) and resolved_path != resolved_base:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "msg": "Invalid file path."}
+            )
+        # 使用规范化后的路径进行所有后续操作
+        if resolved_path.exists() and resolved_path.is_file():
+            return FileResponse(resolved_path, filename=zip_file_name, media_type="application/zip")
+    except (ValueError, OSError):
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "msg": "Invalid file path."}
+        )
 
-    return Response(
+     return JSONResponse(
         status_code=404,
         content={"status": "error", "msg": "File not found or has expired."}
     )
