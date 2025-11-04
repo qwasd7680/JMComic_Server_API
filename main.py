@@ -338,10 +338,10 @@ async def download_file(file_name: str):
             status_code=400,
             content={"status": "error", "msg": "Invalid file name."}
         )
-
+    
     zip_file_name = f"{safe_file_name}.zip"
     file_path = FILE_PATH / zip_file_name
-
+    
     # 确保解析后的路径仍在 FILE_PATH 目录内（双重防护）
     try:
         resolved_path = file_path.resolve()
@@ -361,7 +361,7 @@ async def download_file(file_name: str):
             content={"status": "error", "msg": "Invalid file path."}
         )
 
-     return JSONResponse(
+    return JSONResponse(
         status_code=404,
         content={"status": "error", "msg": "File not found or has expired."}
     )
