@@ -1,6 +1,6 @@
 starlette
 fastapi
-jmcomic~=2.6.10
+jmcomic~=2.6.18
 uvicorn~=0.38.0
 gunicorn~=23.0.0
 httpx
