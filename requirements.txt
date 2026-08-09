@@ -1,7 +1,7 @@
-starlette
-fastapi
-jmcomic~=2.6.10
-uvicorn~=0.38.0
-gunicorn~=23.0.0
-httpx
-pytest-timeout
+starlette>=1.4.0
+fastapi>=0.141.0
+jmcomic>=2.7.0
+uvicorn>=0.52.0
+gunicorn>=26.0.0
+httpx>=0.28.0
+pytest-timeout>=2.4.0

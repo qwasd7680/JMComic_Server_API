@@ -1,79 +1,96 @@
 import os
 import time
+import logging
 import threading
 import shutil
 import asyncio
-from typing import Dict, Optional, Tuple, Any
-from fastapi import FastAPI, WebSocket, Response, HTTPException, Request
+from enum import Enum
+from functools import wraps
+from typing import Dict, Optional, Tuple, Any, Set
+from fastapi import FastAPI, WebSocket, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 import jmcomic
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# --- 全局配置和初始化 ---
+# --- Logging configuration ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# --- Global configuration and initialization ---
 app = FastAPI()
+
+# CORS middleware — allow all origins for watchOS client
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 current_dir = os.getcwd()
 FILE_PATH = Path(f"{current_dir}/temp")
 
-# 自动创建 temp 目录
+# Auto-create temp directory
 os.makedirs(FILE_PATH, exist_ok=True)
 
-# 配置实现方式 - 延迟初始化，避免启动时网络调用
-# 使用环境变量或在首次请求时确定
+# Configure implementation mode — lazy init to avoid blocking startup
 _impl_mode: Optional[str] = None
+_impl_lock = threading.Lock()
 
 
 def get_impl_mode() -> str:
-    """获取实现模式，延迟初始化避免启动阻塞"""
+    """Get implementation mode (html or api), lazy-init with thread-safe double-checked locking."""
     global _impl_mode
     if _impl_mode is None:
-        os.environ['impl'] = 'html'
-        testClient = jmcomic.JmHtmlClient(
-            postman=jmcomic.JmModuleConfig.new_postman(),
-            domain_list=['18comic.vip'],
-            retry_times=1
-        )
-        try:
-            testClient.search_site(search_query="胡桃")
-            _impl_mode = 'html'
-        except jmcomic.JmcomicException as e:
-            # 特定错误（403/地区限制）或任何其他JmcomicException都回退到API模式
-            _impl_mode = 'api'
-            error_msg = str(e)
-            if error_msg[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
-                print(f"Jmcomic Error: {e}")
-                print("已为您更换到api方式，页码数可能会不可用")
-            else:
-                print(f"HTML模式初始化失败，切换到API模式: {e}")
-        except Exception as e:
-            # 对于非JmcomicException的异常，也回退到API模式但记录警告
-            _impl_mode = 'api'
-            print(f"警告: HTML模式测试时发生意外错误，使用API模式: {e}")
-        os.environ['impl'] = _impl_mode
+        with _impl_lock:
+            if _impl_mode is None:
+                os.environ['impl'] = 'html'
+                testClient = jmcomic.JmHtmlClient(
+                    postman=jmcomic.JmModuleConfig.new_postman(),
+                    domain_list=['18comic.vip'],
+                    retry_times=1
+                )
+                try:
+                    testClient.search_site(search_query="胡桃")
+                    _impl_mode = 'html'
+                except jmcomic.JmcomicException as e:
+                    _impl_mode = 'api'
+                    error_msg = str(e)
+                    if error_msg[:36] == "请求失败，响应状态码为403，原因为: [ip地区禁止访问/爬虫被识别]":
+                        logger.warning("Jmcomic Error: %s", e)
+                        logger.warning("已为您更换到api方式，页码数可能会不可用")
+                    else:
+                        logger.warning("HTML模式初始化失败，切换到API模式: %s", e)
+                except Exception as e:
+                    _impl_mode = 'api'
+                    logger.warning("警告: HTML模式测试时发生意外错误，使用API模式: %s", e)
+                os.environ['impl'] = _impl_mode
     return _impl_mode
 
 
-# 客户端连接池 - 重用客户端连接而不是每次创建新的
+# Client connection pool — reuse client instead of creating new each time
 _client_cache: Optional[jmcomic.JmcomicClient] = None
 _client_lock = threading.Lock()
 
 
 def get_jm_client() -> jmcomic.JmcomicClient:
-    """获取共享的 JmComic 客户端实例"""
+    """Get shared JmComic client instance (thread-safe)."""
     global _client_cache
     if _client_cache is None:
         with _client_lock:
             if _client_cache is None:
-                get_impl_mode()  # 确保 impl 已设置
+                get_impl_mode()  # ensure impl is set
                 _client_cache = jmcomic.JmOption.default().new_jm_client()
     return _client_cache
 
 
-# 配置字符串模板工厂 - 避免重复构建字符串
+# Configuration string template factories
 def create_download_option_string(base_dir: Path) -> str:
-    """创建下载选项配置字符串"""
+    """Create download option configuration string."""
     return f"""
         client:
           cache: null
@@ -103,8 +120,8 @@ def create_download_option_string(base_dir: Path) -> str:
           after_album:
             - plugin: zip
               kwargs:
-                level: photo 
-                filename_rule: Ptitle 
+                level: photo
+                filename_rule: Ptitle
                 zip_dir: {base_dir}
                 delete_original_file: true
         version: '2.1'
@@ -112,7 +129,7 @@ def create_download_option_string(base_dir: Path) -> str:
 
 
 def create_info_option_string(base_dir: Path, impl: str) -> str:
-    """创建信息获取选项配置字符串"""
+    """Create info-fetch option configuration string."""
     return f"""
         client:
           cache: null
@@ -143,55 +160,100 @@ def create_info_option_string(base_dir: Path, impl: str) -> str:
         """
 
 
-# --- 简单的内存缓存实现 ---
+# --- Path safety helper ---
+def safe_file_path(base_dir: Path, filename: str) -> Optional[Path]:
+    """
+    Sanitize filename and verify the resolved path stays within base_dir.
+    Returns the resolved Path if safe, None otherwise.
+    """
+    safe_name = filename.replace('/', '').replace('\\', '').replace('..', '')
+    if not safe_name or safe_name != filename:
+        return None
+    try:
+        file_path = (base_dir / safe_name).resolve()
+        base_resolved = base_dir.resolve()
+        if not str(file_path).startswith(str(base_resolved) + os.sep) and file_path != base_resolved:
+            return None
+        return file_path
+    except (ValueError, OSError):
+        return None
 
+
+# --- Simple in-memory cache with TTL, max-size eviction, and cleanup ---
 class SimpleCache:
-    """简单的TTL缓存实现，用于缓存频繁访问的数据"""
-    def __init__(self, ttl_seconds: int = 300):
+    """Simple TTL cache with max-size eviction."""
+
+    def __init__(self, ttl_seconds: int = 300, max_size: int = 1000):
         self.cache: Dict[str, Tuple[Any, datetime]] = {}
         self.ttl = timedelta(seconds=ttl_seconds)
+        self.max_size = max_size
         self.lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
-        """获取缓存值，如果过期返回None"""
+        """Get cached value, return None if expired."""
         with self.lock:
             if key in self.cache:
                 value, expiry = self.cache[key]
-                now = datetime.now()
-                if now < expiry:
+                if datetime.now() < expiry:
                     return value
                 else:
-                    # 清理过期条目
                     del self.cache[key]
             return None
 
     def set(self, key: str, value: Any) -> None:
-        """设置缓存值"""
-        now = datetime.now()
+        """Set cached value with TTL. Evicts oldest entry if over max_size."""
         with self.lock:
-            self.cache[key] = (value, now + self.ttl)
+            self.cache[key] = (value, datetime.now() + self.ttl)
+            if len(self.cache) > self.max_size:
+                oldest_key = next(iter(self.cache))
+                del self.cache[oldest_key]
+
+    def cleanup(self) -> int:
+        """Remove all expired entries. Returns count of removed entries."""
+        now = datetime.now()
+        removed = 0
+        with self.lock:
+            expired_keys = [k for k, (_, exp) in self.cache.items() if exp <= now]
+            for k in expired_keys:
+                del self.cache[k]
+                removed += 1
+        return removed
 
     def clear(self) -> None:
-        """清空缓存"""
+        """Clear all cache entries."""
         with self.lock:
             self.cache.clear()
 
 
-# 创建缓存实例
-# 搜索结果缓存5分钟
-search_cache = SimpleCache(ttl_seconds=300)
-# 排行榜缓存10分钟（更新不频繁）
-rank_cache = SimpleCache(ttl_seconds=600)
-# 相册信息缓存10分钟
-album_info_cache = SimpleCache(ttl_seconds=600)
+# Cache instances
+search_cache = SimpleCache(ttl_seconds=300, max_size=500)        # search: 5 min
+rank_cache = SimpleCache(ttl_seconds=600, max_size=100)          # ranking: 10 min
+album_info_cache = SimpleCache(ttl_seconds=600, max_size=1000)   # album info: 10 min
 
 
-# --- WebSocket 连接管理器 ---
+# --- Background cache cleanup task ---
+async def periodic_cache_cleanup(interval: int = 300):
+    """Periodically clean up expired cache entries."""
+    while True:
+        await asyncio.sleep(interval)
+        total = search_cache.cleanup() + rank_cache.cleanup() + album_info_cache.cleanup()
+        if total > 0:
+            logger.info("Cache cleanup: removed %d expired entries", total)
 
+
+# --- Pending tasks tracking (prevents GC and enables error tracking) ---
+_pending_tasks: Set[asyncio.Task] = set()
+
+
+def _remove_pending_task(task: asyncio.Task) -> None:
+    """Remove a completed task from the pending set."""
+    _pending_tasks.discard(task)
+
+
+# --- WebSocket connection manager ---
 class ConnectionManager:
-    """
-    管理 WebSocket 连接，记录主事件循环并提供线程安全的发送接口。
-    """
+    """Manage WebSocket connections with thread-safe send interface."""
+
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -199,64 +261,81 @@ class ConnectionManager:
     async def connect(self, client_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_connections[client_id] = websocket
-        if self.loop is None:
-            self.loop = asyncio.get_event_loop()
-        print(f"[WebSocket] 客户端 {client_id} 已连接。")
+        self.loop = asyncio.get_running_loop()
+        logger.info("[WebSocket] Client %s connected.", client_id)
 
     async def _send_and_close(self, client_id: str, message: dict):
         websocket = self.active_connections.get(client_id)
         if websocket:
             await websocket.send_json(message)
-            print(f"[WebSocket] 发送消息给客户端 {client_id}: {message}")
+            logger.info("[WebSocket] Sent message to client %s: %s", client_id, message)
             try:
                 await websocket.close()
             except Exception:
                 pass
             self.active_connections.pop(client_id, None)
         else:
-            print(f"[WebSocket] 未找到客户端 {client_id} 的连接，无法发送消息。")
+            logger.warning("[WebSocket] No connection for client %s, cannot send.", client_id)
+
 
 manager = ConnectionManager()
 
 
-# --- 辅助函数：延迟删除（保持用户原有逻辑） ---
-
+# --- Delayed file/folder cleanup ---
 def delayed_delete(path: Path, delay: int):
-    """
-    延迟删除，传入路径（可以是文件或者文件夹）以及延迟时间（单位：秒）
-    """
+    """Delete a file or directory after a delay (runs in a daemon thread)."""
     time.sleep(delay)
     try:
         if path.exists():
             if path.is_dir():
                 shutil.rmtree(path)
-                print(f"[Cleanup] 后台线程：成功删除文件夹 {path}")
+                logger.info("[Cleanup] Deleted folder: %s", path)
             elif path.is_file():
                 path.unlink()
-                print(f"[Cleanup] 后台线程：成功删除文件 {path}")
+                logger.info("[Cleanup] Deleted file: %s", path)
     except Exception as e:
-        print(f"[Cleanup Error] 删除文件/文件夹 {path} 失败: {e}")
+        logger.error("[Cleanup Error] Failed to delete %s: %s", path, e)
 
 
-# --- WebSocket 路由 ---
+# --- Exception handling decorator for jmcomic errors ---
+def handle_jmcomic_errors(func):
+    """
+    Decorator that catches jmcomic exceptions and raises appropriate HTTPException.
+    Apply to endpoints that make jmcomic blocking calls.
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except jmcomic.MissingAlbumPhotoException as e:
+            raise HTTPException(status_code=404, detail=f"Album not found: id={e.error_jmid}")
+        except jmcomic.JsonResolveFailException:
+            raise HTTPException(status_code=502, detail="JSON解析错误")
+        except jmcomic.RequestRetryAllFailException:
+            raise HTTPException(status_code=504, detail="重试次数耗尽")
+        except jmcomic.JmcomicException as e:
+            raise HTTPException(status_code=500, detail=f"出现其他错误: {e}")
+    return wrapper
 
+
+# --- SearchTime Enum for rank endpoint validation ---
+class SearchTime(str, Enum):
+    day = "day"
+    week = "week"
+    month = "month"
+
+
+# --- WebSocket route ---
 @app.websocket("/ws/notifications/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    """
-    WebSocket 连接端点，用于实时通知。
-    客户端连接时必须提供唯一的 client_id。
-    """
+    """WebSocket endpoint for real-time download notifications."""
     await manager.connect(client_id, websocket)
 
 
-# --- 阻塞任务处理函数 (在新线程中运行) ---
-
+# --- Blocking task handler (runs in thread pool) ---
 def sync_download_and_zip_task(album_id: int, client_id: str):
-    """
-    这是一个同步函数，包含原始的阻塞下载和压缩逻辑。
-    任务完成后，它会通过 asyncio.run() 发送 WebSocket 通知。
-    """
-    print(f"[Task] 开始执行相册 {album_id} 的阻塞下载任务...")
+    """Synchronous download & zip logic. Notifies client via WebSocket on completion."""
+    logger.info("[Task] Starting blocking download for album %s ...", album_id)
 
     try:
         optionStr = create_download_option_string(FILE_PATH)
@@ -284,28 +363,31 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
                 "message": f"文件 '{file_title}' 未找到或处理失败。"
             }
         if manager.loop:
-            future = asyncio.run_coroutine_threadsafe(manager._send_and_close(client_id, message), manager.loop)
+            future = asyncio.run_coroutine_threadsafe(
+                manager._send_and_close(client_id, message), manager.loop
+            )
             try:
                 future.result(timeout=10)
             except Exception as e:
-                print(f"[Task] 通过主循环发送消息失败: {e}")
+                logger.error("[Task] Failed to send message via main loop: %s", e)
         else:
-            print("[Task] 未记录到主事件循环，无法发送 WebSocket 通知。")
+            logger.error("[Task] No event loop recorded, cannot send WebSocket notification.")
     except Exception as e:
         if manager.loop:
             fut = asyncio.run_coroutine_threadsafe(
-                manager._send_and_close(client_id,
-                                        {"status": "error", "file_name": "", "message": f"下载任务失败: {str(e)}"}),
+                manager._send_and_close(
+                    client_id,
+                    {"status": "error", "file_name": "", "message": f"下载任务失败: {str(e)}"}
+                ),
                 manager.loop
             )
             try:
                 fut.result(timeout=10)
             except Exception as ee:
-                print(f"[Task] 发送异常通知失败: {ee}")
+                logger.error("[Task] Failed to send error notification: %s", ee)
 
 
-# --- HTTP 任务启动路由 (替换原 download_album) ---
-
+# --- HTTP route: start album download ---
 @app.post("/v1/download/album/{album_id}")
 async def start_album_download(album_id: int, request: Request):
     try:
@@ -314,52 +396,40 @@ async def start_album_download(album_id: int, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Request body must be valid JSON containing 'client_id'.")
 
-    print(f"[Server] 接收下载请求，相册 ID: {album_id}，客户端 ID: {client_id}。任务将在后台启动...")
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id is required")
 
-    asyncio.create_task(run_in_threadpool(sync_download_and_zip_task, album_id, client_id))
+    logger.info("[Server] Received download request: album=%s, client=%s. Starting in background...", album_id, client_id)
 
-    # 返回 HTTP 202 Accepted 响应，告知客户端任务已接收
-    return JSONResponse(status_code=202, content={"status": "processing",
-                                                  "message": "下载任务已在后台启动，请通过 WebSocket 监听 'download_ready' 通知。"})
+    task = asyncio.create_task(run_in_threadpool(sync_download_and_zip_task, album_id, client_id))
+    _pending_tasks.add(task)
+    task.add_done_callback(_remove_pending_task)
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "processing",
+            "message": "下载任务已在后台启动，请通过 WebSocket 监听 'download_ready' 通知。"
+        }
+    )
 
 
-# --- HTTP 文件下载路由  ---
-
+# --- HTTP route: download file ---
 @app.get("/v1/download/{file_name}")
 async def download_file(file_name: str):
     """
-    客户端收到通知后，通过此路由下载文件。
-    安全性：使用路径规范化和白名单验证防止路径遍历攻击
+    Client receives notification and downloads the zip file through this route.
+    Uses safe_file_path helper for path-traversal protection.
     """
-    # 防止路径遍历攻击：移除路径分隔符和相对路径符号
-    safe_file_name = file_name.replace('/', '').replace('\\', '').replace('..', '')
-    if not safe_file_name or safe_file_name != file_name:
+    safe_path = safe_file_path(FILE_PATH, f"{file_name}.zip")
+    if safe_path is None:
         return JSONResponse(
             status_code=400,
             content={"status": "error", "msg": "Invalid file name."}
         )
-    
-    zip_file_name = f"{safe_file_name}.zip"
-    file_path = FILE_PATH / zip_file_name
-    
-    # 确保解析后的路径仍在 FILE_PATH 目录内（双重防护）
-    try:
-        resolved_path = file_path.resolve()
-        resolved_base = FILE_PATH.resolve()
-        # 检查规范化路径是否以基础目录开头（防止符号链接攻击）
-        if not str(resolved_path).startswith(str(resolved_base) + os.sep) and resolved_path != resolved_base:
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error", "msg": "Invalid file path."}
-            )
-        # 使用规范化后的路径进行所有后续操作
-        if resolved_path.exists() and resolved_path.is_file():
-            return FileResponse(resolved_path, filename=zip_file_name, media_type="application/zip")
-    except (ValueError, OSError):
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "msg": "Invalid file path."}
-        )
+
+    if safe_path.exists() and safe_path.is_file():
+        return FileResponse(safe_path, filename=f"{file_name}.zip", media_type="application/zip")
 
     return JSONResponse(
         status_code=404,
@@ -367,144 +437,141 @@ async def download_file(file_name: str):
     )
 
 
+# --- HTTP route: health check ---
 @app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
-    """
-    用于检查服务是否可用
-    :param timestamp: 毫秒级时间戳（可以包含小数）
-    :return:延迟
-    """
+    """Health check endpoint. Returns server latency."""
     nowtimestamp = int(time.time() * 1000)
-    timedelta = nowtimestamp - int(timestamp)
-    ms = str(int(timedelta))
-    return {"status": "ok", "app": "jmcomic_server_api", "latency": ms, "version": "1.0"}
+    timedelta_ms = nowtimestamp - int(timestamp)
+    return {
+        "status": "ok",
+        "app": "jmcomic_server_api",
+        "latency": str(timedelta_ms),
+        "version": "1.0"
+    }
 
 
+# --- HTTP route: search albums ---
 @app.get("/v1/search/{tag}/{num}")
+@handle_jmcomic_errors
 async def search_album(tag: str, num: int):
-    # 检查缓存
+    # Validate num range (path parameter, validated manually)
+    if num < 1 or num > 100:
+        raise HTTPException(status_code=400, detail="num must be between 1 and 100")
+
     cache_key = f"search:{tag}:{num}"
     cached_result = search_cache.get(cache_key)
     if cached_result is not None:
         return cached_result
-    
+
     client = get_jm_client()
-    try:
-        page: jmcomic.JmSearchPage = client.search_site(search_query=f'+{tag}', page=num)
-    except jmcomic.MissingAlbumPhotoException as e:
-        return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
-    except jmcomic.JsonResolveFailException:
-        return {"status": "error", "message": "JSON解析错误"}
-    except jmcomic.RequestRetryAllFailException:
-        return {"status": "error", "message": "重试次数耗尽"}
-    except jmcomic.JmcomicException as e:
-        return {"status": "error", "message": f"出现其他错误:{e}"}
-    
-    # 使用列表推导式提高性能
+    page: jmcomic.JmSearchPage = await run_in_threadpool(
+        client.search_site, search_query=f'+{tag}', page=num
+    )
+
     aid_list = [{'album_id': album_id, 'title': title} for album_id, title in page]
-    
-    # 缓存结果
+
     search_cache.set(cache_key, aid_list)
     return aid_list
 
 
+# --- HTTP route: album info ---
 @app.get("/v1/info/{aid}")
+@handle_jmcomic_errors
 async def info(aid: str):
-    # 检查缓存
     cache_key = f"album_info:{aid}"
     cached_result = album_info_cache.get(cache_key)
     if cached_result is not None:
         return cached_result
-    
-    # 使用共享客户端获取相册信息
+
     client = get_jm_client()
     impl = get_impl_mode()
-    
-    try:
-        page = client.search_site(search_query=aid)
-    except jmcomic.MissingAlbumPhotoException as e:
-        return {"status": "error", "message": f'id={e.error_jmid}的本子不存在'}
-    except jmcomic.JsonResolveFailException:
-        return {"status": "error", "message": "JSON解析错误"}
-    except jmcomic.RequestRetryAllFailException:
-        return {"status": "error", "message": "重试次数耗尽"}
-    except jmcomic.JmcomicException as e:
-        return {"status": "error", "message": f"出现其他错误:{e}"}
-    
+
+    page = await run_in_threadpool(client.search_site, search_query=aid)
+
+    if not hasattr(page, 'album') or page.album is None:
+        raise HTTPException(status_code=404, detail=f"Album not found: id={aid}")
+
     album: jmcomic.JmAlbumDetail = page.single_album
     file_path = FILE_PATH / f"cover-{album.album_id}.jpg"
-    
-    # 只有在需要下载封面时才创建自定义客户端
+
     if not file_path.exists():
         optionStr = create_info_option_string(FILE_PATH, impl)
         option = jmcomic.create_option_by_str(optionStr)
         download_client = option.new_jm_client()
-        download_client.download_album_cover(album.album_id, str(file_path))
-    
-    result = {"status": "success", "tag": album.tags, "view_count": album.views, "like_count": album.likes,
-              "page_count": str(album.page_count), "method": impl}
-    
-    # 缓存结果
+        await run_in_threadpool(download_client.download_album_cover, album.album_id, str(file_path))
+
+    result = {
+        "status": "success",
+        "tag": album.tags,
+        "view_count": album.views,
+        "like_count": album.likes,
+        "page_count": str(album.page_count),
+        "method": impl
+    }
+
     album_info_cache.set(cache_key, result)
     return result
 
 
+# --- HTTP route: get cover image ---
 @app.get("/v1/get/cover/{aid}")
 async def getcover(aid: str):
     """
-    获取相册封面图片
-    安全性：使用白名单字符验证和路径规范化防止路径遍历攻击
+    Get album cover image. Uses safe_file_path helper for path-traversal protection.
     """
-    # 防止路径遍历攻击：验证 aid 只包含安全字符
-    # aid 应该是数字ID，但原代码允许字符串，所以我们允许字母数字和少量安全字符
+    # Whitelist characters for aid (alphanumeric, dash, underscore)
     safe_aid = ''.join(c for c in aid if c.isalnum() or c in '-_')
     if not safe_aid or safe_aid != aid:
-        return {"status": "error", "message": "Invalid album ID"}
-    
-    file_path = FILE_PATH / f"cover-{safe_aid}.jpg"
-    
-    # 确保解析后的路径仍在 FILE_PATH 目录内（双重防护）
-    try:
-        resolved_path = file_path.resolve()
-        resolved_base = FILE_PATH.resolve()
-        # 检查规范化路径是否以基础目录开头（防止符号链接攻击）
-        if not str(resolved_path).startswith(str(resolved_base) + os.sep) and resolved_path != resolved_base:
-            return {"status": "error", "message": "Invalid file path"}
-        
-        # 使用规范化后的路径进行所有后续操作
-        if resolved_path.exists() and resolved_path.is_file():
-            # 启动延迟删除线程 (0.5 * 60 * 60 秒 = 30 分钟)
-            threading.Thread(target=delayed_delete, args=(resolved_path, int(0.5 * 60 * 60)), daemon=True).start()
-            return FileResponse(resolved_path, filename=f"cover.jpg", media_type="image/jpeg")
-    except (ValueError, OSError):
-        return {"status": "error", "message": "Invalid file path"}
-    
-    return {"status": "error"}
+        raise HTTPException(status_code=400, detail="Invalid album ID")
+
+    safe_path = safe_file_path(FILE_PATH, f"cover-{safe_aid}.jpg")
+    if safe_path is None:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    if safe_path.exists() and safe_path.is_file():
+        # Schedule delayed cleanup (30 minutes)
+        threading.Thread(
+            target=delayed_delete, args=(safe_path, int(0.5 * 60 * 60)), daemon=True
+        ).start()
+        return FileResponse(safe_path, filename="cover.jpg", media_type="image/jpeg")
+
+    raise HTTPException(status_code=404, detail="Cover not found")
 
 
+# --- HTTP route: ranking ---
 @app.get("/v1/rank/{searchTime}")
-async def rank(searchTime: str):
-    # 检查缓存
-    cache_key = f"rank:{searchTime}"
+@handle_jmcomic_errors
+async def rank(searchTime: SearchTime):
+    cache_key = f"rank:{searchTime.value}"
     cached_result = rank_cache.get(cache_key)
     if cached_result is not None:
         return cached_result
-    
-    client = get_jm_client()
-    if searchTime == "month":
-        pages: jmcomic.JmCategoryPage = client.month_ranking(1)
-    elif searchTime == "week":
-        pages: jmcomic.JmCategoryPage = client.week_ranking(1)
-    elif searchTime == "day":
-        pages: jmcomic.JmCategoryPage = client.day_ranking(1)
 
-    # 使用列表推导式提高性能
+    client = get_jm_client()
+    if searchTime == SearchTime.month:
+        pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.month_ranking, 1)
+    elif searchTime == SearchTime.week:
+        pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.week_ranking, 1)
+    elif searchTime == SearchTime.day:
+        pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.day_ranking, 1)
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid searchTime: {searchTime}")
+
     ranklist = [{"aid": album_id, "title": title} for album_id, title in pages]
 
-    # 缓存结果
     rank_cache.set(cache_key, ranklist)
     return ranklist
 
 
+# --- Startup event ---
+@app.on_event("startup")
+async def startup_event():
+    """Start background cache cleanup task on application startup."""
+    cleanup_task = asyncio.create_task(periodic_cache_cleanup())
+    _pending_tasks.add(cleanup_task)
+
+
+# --- Entry point ---
 if __name__ == '__main__':
     uvicorn.run("main:app", host="0.0.0.0", log_level="info")
