@@ -178,3 +178,46 @@ def test_cors_headers():
     )
     assert response.status_code == 200
     assert "access-control-allow-origin" in response.headers
+
+
+def test_get_comments():
+    client = TestClient(app)
+    aid = 1225432
+    response = client.get(f"/v1/comments/{aid}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["aid"] == str(aid)
+    assert data["page"] == 1
+    assert "page_size" in data
+    assert "total" in data
+    assert "page_count" in data
+    assert "comment_count" in data
+    assert isinstance(data["comments"], list)
+
+
+def test_get_comments_page_2():
+    client = TestClient(app)
+    aid = 1225432
+    response = client.get(f"/v1/comments/{aid}?page=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["page"] == 2
+
+
+def test_comments_response_structure():
+    client = TestClient(app)
+    aid = 1225432
+    response = client.get(f"/v1/comments/{aid}")
+    assert response.status_code == 200
+    comments = response.json()["comments"]
+    if len(comments) > 0:
+        comment = comments[0]
+        assert "comment_id" in comment
+        assert "content" in comment
+        assert "username" in comment
+        assert "nickname" in comment
+        assert "is_spoiler" in comment
+        assert "created_at" in comment
+        assert "likes" in comment
+        assert "replies" in comment
+        assert isinstance(comment["replies"], list)

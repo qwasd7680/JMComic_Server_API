@@ -15,6 +15,7 @@ from main import (
     SearchTime,
     ConnectionManager,
     FILE_PATH,
+    _serialize_comment,
 )
 
 
@@ -288,6 +289,18 @@ class TestInputValidation:
         response = client.get("/v1/download/nonexistent-album-title")
         assert response.status_code == 404
 
+    def test_comments_page_too_low(self):
+        client = TestClient(app)
+        response = client.get("/v1/comments/12345?page=0")
+        assert response.status_code == 400
+        assert "page must be" in response.json()["detail"]
+
+    def test_comments_negative_page(self):
+        client = TestClient(app)
+        response = client.get("/v1/comments/12345?page=-1")
+        assert response.status_code == 400
+        assert "page must be" in response.json()["detail"]
+
 
 # ============================================================
 # CORS middleware
@@ -307,3 +320,66 @@ class TestCORS:
         )
         assert response.status_code == 200
         assert "access-control-allow-origin" in response.headers
+
+
+# ============================================================
+# _serialize_comment helper
+# ============================================================
+
+class TestSerializeComment:
+    """Tests for the _serialize_comment helper."""
+
+    def test_basic_fields(self):
+        from unittest.mock import MagicMock
+        comment = MagicMock()
+        comment.comment_id = "123"
+        comment.album_id = "456"
+        comment.user_id = "789"
+        comment.parent_comment_id = None
+        comment.content = "hello"
+        comment.username = "user1"
+        comment.nickname = "User One"
+        comment.is_spoiler = False
+        comment.created_at = "2025-01-01"
+        comment.likes = 42
+        comment.replies = []
+
+        result = _serialize_comment(comment)
+        assert result["comment_id"] == "123"
+        assert result["album_id"] == "456"
+        assert result["content"] == "hello"
+        assert result["likes"] == 42
+        assert result["replies"] == []
+
+    def test_nested_replies(self):
+        from unittest.mock import MagicMock
+        reply = MagicMock()
+        reply.comment_id = "r1"
+        reply.album_id = None
+        reply.user_id = None
+        reply.parent_comment_id = "123"
+        reply.content = "reply"
+        reply.username = "user2"
+        reply.nickname = None
+        reply.is_spoiler = True
+        reply.created_at = "2025-01-02"
+        reply.likes = None
+        reply.replies = []
+
+        parent = MagicMock()
+        parent.comment_id = "123"
+        parent.album_id = "456"
+        parent.user_id = "789"
+        parent.parent_comment_id = None
+        parent.content = "parent"
+        parent.username = "user1"
+        parent.nickname = "User One"
+        parent.is_spoiler = False
+        parent.created_at = "2025-01-01"
+        parent.likes = 10
+        parent.replies = [reply]
+
+        result = _serialize_comment(parent)
+        assert len(result["replies"]) == 1
+        assert result["replies"][0]["content"] == "reply"
+        assert result["replies"][0]["is_spoiler"] is True

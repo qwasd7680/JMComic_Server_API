@@ -229,6 +229,7 @@ class SimpleCache:
 search_cache = SimpleCache(ttl_seconds=300, max_size=500)        # search: 5 min
 rank_cache = SimpleCache(ttl_seconds=600, max_size=100)          # ranking: 10 min
 album_info_cache = SimpleCache(ttl_seconds=600, max_size=1000)   # album info: 10 min
+comment_cache = SimpleCache(ttl_seconds=300, max_size=500)       # comments: 5 min
 
 
 # --- Background cache cleanup task ---
@@ -236,7 +237,7 @@ async def periodic_cache_cleanup(interval: int = 300):
     """Periodically clean up expired cache entries."""
     while True:
         await asyncio.sleep(interval)
-        total = search_cache.cleanup() + rank_cache.cleanup() + album_info_cache.cleanup()
+        total = search_cache.cleanup() + rank_cache.cleanup() + album_info_cache.cleanup() + comment_cache.cleanup()
         if total > 0:
             logger.info("Cache cleanup: removed %d expired entries", total)
 
@@ -437,6 +438,24 @@ async def download_file(file_name: str):
     )
 
 
+def _serialize_comment(comment) -> dict:
+    """Serialize a JmAlbumComment to a JSON-safe dict."""
+    result = {
+        "comment_id": comment.comment_id,
+        "album_id": comment.album_id,
+        "user_id": comment.user_id,
+        "parent_comment_id": comment.parent_comment_id,
+        "content": comment.content,
+        "username": comment.username,
+        "nickname": comment.nickname,
+        "is_spoiler": comment.is_spoiler,
+        "created_at": comment.created_at,
+        "likes": comment.likes,
+        "replies": [_serialize_comment(r) for r in comment.replies],
+    }
+    return result
+
+
 # --- HTTP route: health check ---
 @app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
@@ -562,6 +581,37 @@ async def rank(searchTime: SearchTime):
 
     rank_cache.set(cache_key, ranklist)
     return ranklist
+
+
+# --- HTTP route: album comments ---
+@app.get("/v1/comments/{aid}")
+@handle_jmcomic_errors
+async def get_comments(aid: str, page: int = 1):
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+
+    cache_key = f"comments:{aid}:{page}"
+    cached_result = comment_cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
+    client = get_jm_client()
+    comment_page: jmcomic.JmAlbumCommentPage = await run_in_threadpool(
+        client.album_pagination, aid, page=page
+    )
+
+    result = {
+        "aid": aid,
+        "page": page,
+        "page_size": comment_page.page_size,
+        "total": comment_page.total,
+        "page_count": comment_page.page_count,
+        "comment_count": comment_page.comment_count,
+        "comments": [_serialize_comment(c) for c in comment_page.content],
+    }
+
+    comment_cache.set(cache_key, result)
+    return result
 
 
 # --- Startup event ---
