@@ -1,0 +1,12 @@
+tests/
+.github/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+.idea/
+temp/
+*.md
+!requirements*.txt

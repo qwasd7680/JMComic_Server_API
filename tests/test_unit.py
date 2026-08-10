@@ -191,7 +191,7 @@ class TestConnectionManager:
         mgr = ConnectionManager()
         # Should not raise when client_id not found
         import asyncio
-        asyncio.run(mgr._send_and_close("nonexistent", {"status": "test"}))
+        asyncio.run(mgr.send_and_close("nonexistent", {"status": "test"}))
 
 
 # ============================================================
@@ -300,6 +300,14 @@ class TestInputValidation:
         response = client.get("/v1/comments/12345?page=-1")
         assert response.status_code == 400
         assert "page must be" in response.json()["detail"]
+
+    def test_health_endpoint(self):
+        client = TestClient(app)
+        response = client.get("/v1/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["app"] == "jmcomic_server_api"
 
 
 # ============================================================

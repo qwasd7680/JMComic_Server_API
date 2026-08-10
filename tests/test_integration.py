@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from main import app, search_cache, rank_cache, album_info_cache
+from main import app, search_cache, rank_cache, album_info_cache, comment_cache
 
 current_dir = os.getcwd()
 FILE_PATH = Path(f"{current_dir}/temp")
@@ -42,6 +42,7 @@ def clear_caches():
     search_cache.clear()
     rank_cache.clear()
     album_info_cache.clear()
+    comment_cache.clear()
     yield
 
 
@@ -307,3 +308,69 @@ class TestDownload:
     def test_download_file_path_traversal(self, client):
         resp = client.get("/v1/download/../../etc/passwd")
         assert resp.status_code in (400, 404, 422)
+
+
+# ============================================================
+# Comments
+# ============================================================
+
+@pytest.mark.integration
+class TestComments:
+    def test_comments_returns_success(self, client):
+        resp = client.get(f"/v1/comments/{TEST_AID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["aid"] == str(TEST_AID)
+        assert data["page"] == 1
+
+    def test_comments_has_required_fields(self, client):
+        resp = client.get(f"/v1/comments/{TEST_AID}")
+        data = resp.json()
+        assert "page_size" in data
+        assert "total" in data
+        assert "page_count" in data
+        assert "comment_count" in data
+        assert isinstance(data["comments"], list)
+
+    def test_comments_page_2(self, client):
+        resp = client.get(f"/v1/comments/{TEST_AID}?page=2")
+        assert resp.status_code == 200
+        assert resp.json()["page"] == 2
+
+    def test_comments_invalid_page(self, client):
+        resp = client.get(f"/v1/comments/{TEST_AID}?page=0")
+        assert resp.status_code == 400
+        assert "page must be" in resp.json()["detail"]
+
+    def test_comments_caching(self, client):
+        resp1 = client.get(f"/v1/comments/{TEST_AID}")
+        resp2 = client.get(f"/v1/comments/{TEST_AID}")
+        assert resp1.json() == resp2.json()
+
+    def test_comments_response_structure(self, client):
+        resp = client.get(f"/v1/comments/{TEST_AID}")
+        comments = resp.json()["comments"]
+        if len(comments) > 0:
+            comment = comments[0]
+            assert "comment_id" in comment
+            assert "content" in comment
+            assert "username" in comment
+            assert "is_spoiler" in comment
+            assert "created_at" in comment
+            assert "likes" in comment
+            assert "replies" in comment
+            assert isinstance(comment["replies"], list)
+
+
+# ============================================================
+# Health check (new /v1/health endpoint)
+# ============================================================
+
+@pytest.mark.integration
+class TestHealthV2:
+    def test_health_endpoint(self, client):
+        resp = client.get("/v1/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["app"] == "jmcomic_server_api"

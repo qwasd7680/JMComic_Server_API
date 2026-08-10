@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 import jmcomic
 
+from main import create_download_option_string
+
 current_dir = os.getcwd()
 FILE_PATH = Path(f"{current_dir}/temp")
 os.makedirs(FILE_PATH, exist_ok=True)
@@ -28,41 +30,7 @@ def test_rank_comic():
 
 
 def test_comic_download():
-    optionStr = f"""
-           client:
-             cache: null
-             domain: []
-             impl: api
-             postman:
-               meta_data:
-                 headers: null
-                 impersonate: chrome
-                 proxies: {{}}
-               type: curl_cffi
-             retry_times: 5
-           dir_rule:
-             base_dir: {FILE_PATH}
-             rule: Bd_Pname
-           download:
-             cache: true
-             image:
-               decode: true
-               suffix: null
-             threading:
-               image: 30
-               photo: 8
-           log: true
-           plugins:
-             valid: log
-             after_album:
-               - plugin: zip
-                 kwargs:
-                   level: photo 
-                   filename_rule: Ptitle 
-                   zip_dir: {FILE_PATH}
-                   delete_original_file: true
-           version: '2.1'
-           """
+    optionStr = create_download_option_string(FILE_PATH)
     option = jmcomic.create_option_by_str(optionStr)
     jmcomic.JmModuleConfig.CLASS_DOWNLOADER = jmcomic.JmDownloader
     album_list = jmcomic.download_album(1225432, option)

@@ -1,9 +1,9 @@
 import os
 import time
 import logging
-import threading
 import shutil
 import asyncio
+from contextlib import asynccontextmanager
 from enum import Enum
 from functools import wraps
 from typing import Dict, Optional, Tuple, Any, Set
@@ -21,25 +21,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 # --- Global configuration and initialization ---
-app = FastAPI()
-
-# CORS middleware — allow all origins for watchOS client
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 current_dir = os.getcwd()
 FILE_PATH = Path(f"{current_dir}/temp")
-
-# Auto-create temp directory
 os.makedirs(FILE_PATH, exist_ok=True)
+
+# --- Delayed file cleanup tracking (replaces per-request threads) ---
+_pending_deletions: Dict[Path, float] = {}
+_deletions_lock = __import__('threading').Lock()
+
+
+def schedule_deletion(path: Path, delay_seconds: int = 1800) -> None:
+    """Schedule a file/folder for deletion after delay_seconds. Skips if already scheduled."""
+    with _deletions_lock:
+        if path not in _pending_deletions:
+            _pending_deletions[path] = time.time() + delay_seconds
+
+
+def _process_deletions() -> int:
+    """Delete expired entries. Returns count of deleted items."""
+    now = time.time()
+    deleted = 0
+    with _deletions_lock:
+        expired = [p for p, t in _pending_deletions.items() if t <= now]
+        for p in expired:
+            del _pending_deletions[p]
+    for path in expired:
+        try:
+            if path.exists():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                    logger.info("[Cleanup] Deleted folder: %s", path)
+                elif path.is_file():
+                    path.unlink()
+                    logger.info("[Cleanup] Deleted file: %s", path)
+            deleted += 1
+        except Exception as e:
+            logger.error("[Cleanup Error] Failed to delete %s: %s", path, e)
+    return deleted
+
 
 # Configure implementation mode — lazy init to avoid blocking startup
 _impl_mode: Optional[str] = None
-_impl_lock = threading.Lock()
+_impl_lock = __import__('threading').Lock()
 
 
 def get_impl_mode() -> str:
@@ -74,7 +97,7 @@ def get_impl_mode() -> str:
 
 # Client connection pool — reuse client instead of creating new each time
 _client_cache: Optional[jmcomic.JmcomicClient] = None
-_client_lock = threading.Lock()
+_client_lock = __import__('threading').Lock()
 
 
 def get_jm_client() -> jmcomic.JmcomicClient:
@@ -88,7 +111,45 @@ def get_jm_client() -> jmcomic.JmcomicClient:
     return _client_cache
 
 
-# Configuration string template factories
+# --- Option object caching (avoids repeated YAML parsing) ---
+_download_option_cache: Optional[jmcomic.JmOption] = None
+_download_option_lock = __import__('threading').Lock()
+_info_option_cache: Dict[str, jmcomic.JmOption] = {}
+_info_option_lock = __import__('threading').Lock()
+
+
+def _base_option_yaml(impl: str, base_dir: Path) -> str:
+    """Shared YAML config fragment for both download and info options."""
+    return f"""
+        client:
+          cache: null
+          domain: []
+          impl: {impl}
+          postman:
+            meta_data:
+              headers: null
+              impersonate: chrome
+              proxies: {{}}
+            type: curl_cffi
+          retry_times: 5
+        dir_rule:
+          base_dir: {base_dir}
+          rule: Bd_Pname
+        download:
+          cache: false
+          image:
+            decode: true
+            suffix: null
+          threading:
+            image: 30
+            photo: 8
+        log: true
+        plugins:
+          valid: log
+        version: '2.1'
+        """
+
+
 def create_download_option_string(base_dir: Path) -> str:
     """Create download option configuration string."""
     return f"""
@@ -128,36 +189,28 @@ def create_download_option_string(base_dir: Path) -> str:
         """
 
 
-def create_info_option_string(base_dir: Path, impl: str) -> str:
-    """Create info-fetch option configuration string."""
-    return f"""
-        client:
-          cache: null
-          domain: []
-          impl: {impl}
-          postman:
-            meta_data:
-              headers: null
-              impersonate: chrome
-              proxies: {{}}
-            type: curl_cffi
-          retry_times: 5
-        dir_rule:
-          base_dir: {base_dir}
-          rule: Bd_Pname
-        download:
-          cache: false
-          image:
-            decode: true
-            suffix: webp
-          threading:
-            image: 30
-            photo: 8
-        log: true
-        plugins:
-          valid: log
-        version: '2.1'
-        """
+def get_download_option() -> jmcomic.JmOption:
+    """Get cached download option object (thread-safe)."""
+    global _download_option_cache
+    if _download_option_cache is None:
+        with _download_option_lock:
+            if _download_option_cache is None:
+                _download_option_cache = jmcomic.create_option_by_str(
+                    create_download_option_string(FILE_PATH)
+                )
+    return _download_option_cache
+
+
+def get_info_option() -> jmcomic.JmOption:
+    """Get cached info option object for current impl mode (thread-safe)."""
+    impl = get_impl_mode()
+    if impl not in _info_option_cache:
+        with _info_option_lock:
+            if impl not in _info_option_cache:
+                _info_option_cache[impl] = jmcomic.create_option_by_str(
+                    _base_option_yaml(impl, FILE_PATH)
+                )
+    return _info_option_cache[impl]
 
 
 # --- Path safety helper ---
@@ -187,7 +240,7 @@ class SimpleCache:
         self.cache: Dict[str, Tuple[Any, datetime]] = {}
         self.ttl = timedelta(seconds=ttl_seconds)
         self.max_size = max_size
-        self.lock = threading.Lock()
+        self.lock = __import__('threading').Lock()
 
     def get(self, key: str) -> Optional[Any]:
         """Get cached value, return None if expired."""
@@ -232,14 +285,20 @@ album_info_cache = SimpleCache(ttl_seconds=600, max_size=1000)   # album info: 1
 comment_cache = SimpleCache(ttl_seconds=300, max_size=500)       # comments: 5 min
 
 
-# --- Background cache cleanup task ---
-async def periodic_cache_cleanup(interval: int = 300):
-    """Periodically clean up expired cache entries."""
+# --- Background cache cleanup + file deletion task ---
+async def periodic_cleanup(interval: int = 300):
+    """Periodically clean up expired cache entries and process scheduled deletions."""
     while True:
         await asyncio.sleep(interval)
-        total = search_cache.cleanup() + rank_cache.cleanup() + album_info_cache.cleanup() + comment_cache.cleanup()
-        if total > 0:
-            logger.info("Cache cleanup: removed %d expired entries", total)
+        total = (
+            search_cache.cleanup()
+            + rank_cache.cleanup()
+            + album_info_cache.cleanup()
+            + comment_cache.cleanup()
+        )
+        deleted = await run_in_threadpool(_process_deletions)
+        if total > 0 or deleted > 0:
+            logger.info("Cleanup: removed %d cache entries, deleted %d files", total, deleted)
 
 
 # --- Pending tasks tracking (prevents GC and enables error tracking) ---
@@ -265,7 +324,8 @@ class ConnectionManager:
         self.loop = asyncio.get_running_loop()
         logger.info("[WebSocket] Client %s connected.", client_id)
 
-    async def _send_and_close(self, client_id: str, message: dict):
+    async def send_and_close(self, client_id: str, message: dict):
+        """Send a JSON message to client and close the connection."""
         websocket = self.active_connections.get(client_id)
         if websocket:
             await websocket.send_json(message)
@@ -280,22 +340,6 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
-
-
-# --- Delayed file/folder cleanup ---
-def delayed_delete(path: Path, delay: int):
-    """Delete a file or directory after a delay (runs in a daemon thread)."""
-    time.sleep(delay)
-    try:
-        if path.exists():
-            if path.is_dir():
-                shutil.rmtree(path)
-                logger.info("[Cleanup] Deleted folder: %s", path)
-            elif path.is_file():
-                path.unlink()
-                logger.info("[Cleanup] Deleted file: %s", path)
-    except Exception as e:
-        logger.error("[Cleanup Error] Failed to delete %s: %s", path, e)
 
 
 # --- Exception handling decorator for jmcomic errors ---
@@ -316,6 +360,11 @@ def handle_jmcomic_errors(func):
             raise HTTPException(status_code=504, detail="重试次数耗尽")
         except jmcomic.JmcomicException as e:
             raise HTTPException(status_code=500, detail=f"出现其他错误: {e}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Unexpected error in %s", func.__name__)
+            raise HTTPException(status_code=500, detail=f"服务器内部错误: {type(e).__name__}")
     return wrapper
 
 
@@ -326,11 +375,37 @@ class SearchTime(str, Enum):
     month = "month"
 
 
+# --- Lifespan handler (replaces deprecated on_event) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown lifecycle: start background cleanup task."""
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    _pending_tasks.add(cleanup_task)
+    yield
+    cleanup_task.cancel()
+
+
+# --- Create app with lifespan ---
+app = FastAPI(lifespan=lifespan)
+
+# CORS middleware — allow all origins for watchOS client
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 # --- WebSocket route ---
 @app.websocket("/ws/notifications/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     """WebSocket endpoint for real-time download notifications."""
     await manager.connect(client_id, websocket)
+    try:
+        await websocket.wait_closed()
+    except Exception:
+        pass
 
 
 # --- Blocking task handler (runs in thread pool) ---
@@ -339,8 +414,7 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
     logger.info("[Task] Starting blocking download for album %s ...", album_id)
 
     try:
-        optionStr = create_download_option_string(FILE_PATH)
-        option = jmcomic.create_option_by_str(optionStr)
+        option = get_download_option()
         jmcomic.JmModuleConfig.CLASS_DOWNLOADER = jmcomic.JmDownloader
         album_list = jmcomic.download_album(album_id, option)
 
@@ -365,7 +439,7 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
             }
         if manager.loop:
             future = asyncio.run_coroutine_threadsafe(
-                manager._send_and_close(client_id, message), manager.loop
+                manager.send_and_close(client_id, message), manager.loop
             )
             try:
                 future.result(timeout=10)
@@ -376,7 +450,7 @@ def sync_download_and_zip_task(album_id: int, client_id: str):
     except Exception as e:
         if manager.loop:
             fut = asyncio.run_coroutine_threadsafe(
-                manager._send_and_close(
+                manager.send_and_close(
                     client_id,
                     {"status": "error", "file_name": "", "message": f"下载任务失败: {str(e)}"}
                 ),
@@ -440,7 +514,7 @@ async def download_file(file_name: str):
 
 def _serialize_comment(comment) -> dict:
     """Serialize a JmAlbumComment to a JSON-safe dict."""
-    result = {
+    return {
         "comment_id": comment.comment_id,
         "album_id": comment.album_id,
         "user_id": comment.user_id,
@@ -453,10 +527,16 @@ def _serialize_comment(comment) -> dict:
         "likes": comment.likes,
         "replies": [_serialize_comment(r) for r in comment.replies],
     }
-    return result
 
 
-# --- HTTP route: health check ---
+# --- HTTP route: health check (recommended) ---
+@app.get("/v1/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok", "app": "jmcomic_server_api", "version": "1.0"}
+
+
+# --- HTTP route: health check (legacy, backward compatible) ---
 @app.get("/v1/{timestamp}")
 async def read_root(timestamp: float):
     """Health check endpoint. Returns server latency."""
@@ -506,26 +586,24 @@ async def info(aid: str):
     client = get_jm_client()
     impl = get_impl_mode()
 
-    page = await run_in_threadpool(client.search_site, search_query=aid)
+    album: jmcomic.JmAlbumDetail = await run_in_threadpool(client.get_album_detail, aid)
 
-    if not hasattr(page, 'album') or page.album is None:
-        raise HTTPException(status_code=404, detail=f"Album not found: id={aid}")
-
-    album: jmcomic.JmAlbumDetail = page.single_album
     file_path = FILE_PATH / f"cover-{album.album_id}.jpg"
 
     if not file_path.exists():
-        optionStr = create_info_option_string(FILE_PATH, impl)
-        option = jmcomic.create_option_by_str(optionStr)
-        download_client = option.new_jm_client()
-        await run_in_threadpool(download_client.download_album_cover, album.album_id, str(file_path))
+        try:
+            option = get_info_option()
+            download_client = option.new_jm_client()
+            await run_in_threadpool(download_client.download_album_cover, album.album_id, str(file_path))
+        except Exception as e:
+            logger.warning("Cover download failed for album %s: %s", aid, e)
 
     result = {
         "status": "success",
         "tag": album.tags,
         "view_count": album.views,
         "like_count": album.likes,
-        "page_count": str(album.page_count),
+        "page_count": album.page_count,
         "method": impl
     }
 
@@ -549,10 +627,7 @@ async def getcover(aid: str):
         raise HTTPException(status_code=400, detail="Invalid file path")
 
     if safe_path.exists() and safe_path.is_file():
-        # Schedule delayed cleanup (30 minutes)
-        threading.Thread(
-            target=delayed_delete, args=(safe_path, int(0.5 * 60 * 60)), daemon=True
-        ).start()
+        schedule_deletion(safe_path, delay_seconds=1800)
         return FileResponse(safe_path, filename="cover.jpg", media_type="image/jpeg")
 
     raise HTTPException(status_code=404, detail="Cover not found")
@@ -572,10 +647,8 @@ async def rank(searchTime: SearchTime):
         pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.month_ranking, 1)
     elif searchTime == SearchTime.week:
         pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.week_ranking, 1)
-    elif searchTime == SearchTime.day:
-        pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.day_ranking, 1)
     else:
-        raise HTTPException(status_code=400, detail=f"Invalid searchTime: {searchTime}")
+        pages: jmcomic.JmCategoryPage = await run_in_threadpool(client.day_ranking, 1)
 
     ranklist = [{"aid": album_id, "title": title} for album_id, title in pages]
 
@@ -612,14 +685,6 @@ async def get_comments(aid: str, page: int = 1):
 
     comment_cache.set(cache_key, result)
     return result
-
-
-# --- Startup event ---
-@app.on_event("startup")
-async def startup_event():
-    """Start background cache cleanup task on application startup."""
-    cleanup_task = asyncio.create_task(periodic_cache_cleanup())
-    _pending_tasks.add(cleanup_task)
 
 
 # --- Entry point ---
